@@ -1,3 +1,4 @@
+AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua
 $ ./boot.exe
 [C-CORE] Booting Headless Worker...
 [LUA-OS-THREAD] Booting Lua VM...
@@ -11,7 +12,7 @@ $ ./boot.exe
 [LUA] Window Surface Linked from Main Thread!
 [LUA] Hardware GPU Selected!
 [LUA] Logical Device Created!
-[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x02294892afc8
+[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x0158510af698
 [MEMORY] ReBAR Supported! Streaming directly to VRAM.
 [MEMORY] Allocated & Mapped VRAM Buffer: MASTER_GPU_BLOCK (256.00 MB)
 [SWAPCHAIN] Building the display chain...
@@ -24,7 +25,10 @@ $ ./boot.exe
 [GRAPHICS] Swarm Pipeline Successfully Compiled!
 [FACTORY] Forging Triple-Buffered Command Matrix...
 [LUA CO] Render Fiber Weaving...
-
-[LUA FATAL ERROR] main.lua:54: FATAL: FIBER CRASH -> main.lua:83: attempt to index upvalue 'vmath' (a boolean value)
+[LUA IO] ESCAPE PRESSED. Executing Teardown...
 [LUA-OS-THREAD] VM Destroyed.
 
+[C-CORE] Shutdown triggered. Waiting for Lua VM...
+[C-CORE] Clean Exit.
+
+AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua
