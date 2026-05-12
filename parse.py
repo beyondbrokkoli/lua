@@ -24,7 +24,7 @@ TARGET_FUNCTIONS = {
     "vkDestroyImage",                # <--- ADD THIS
 
     # Command Buffers
-    "vkCreateCommandPool", "vkDestroyCommandPool", "vkAllocateCommandBuffers",
+    "vkCreateCommandPool", "vkDestroyCommandPool", "vkResetCommandPool", "vkAllocateCommandBuffers",
     "vkBeginCommandBuffer", "vkEndCommandBuffer", "vkResetCommandBuffer",
     "vkCmdBindPipeline", "vkCmdBindDescriptorSets", "vkCmdPushConstants",
     "vkCmdDispatch", "vkCmdPipelineBarrier",
