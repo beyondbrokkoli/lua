@@ -9,6 +9,7 @@ local descriptors = require("descriptors")
 local compute = require("compute_pipeline")
 local graphics = require("graphics_pipeline")
 local cmd_factory = require("command_factory")
+local renderer = require("renderer")
 
 ffi.cdef[[
     int vibe_get_is_running();
@@ -26,10 +27,10 @@ ffi.cdef[[
         uint32_t pos_y_idx;
         uint32_t pos_z_idx;
         uint32_t particle_count;
-        
+
         float dt;
-        uint32_t _pad[3]; 
-        
+        uint32_t _pad[3];
+
         float viewProj[16];
     } PushConstants;
 ]]
@@ -65,7 +66,7 @@ local function run_weaver()
     end
 end
 
-local function render_fiber(vk, device, sc_state, queue, cmd_state)
+local function render_fiber(vk, device, sc_state, queue, cmd_state, sync_state, frame_state, master_buf, comp_state, gfx_state)
     print("[LUA CO] Render Fiber Weaving...")
     local frame_count = 0
 
@@ -85,19 +86,27 @@ local function render_fiber(vk, device, sc_state, queue, cmd_state)
     while ffi.C.vibe_get_is_running() == 1 do
         cmd_factory.ResetCurrentFrame(vk, device, cmd_state)
 
-        -- [Future Target: vkAcquireNextImageKHR]
-        -- [Future Target: allocate buffer via cmd_factory.AllocateBuffer()]
-
         -- Matrix Math (Zero Allocation)
         pc.dt = frame_count * 0.016
         local orbit_x = math.sin(pc.dt) * 400.0
         local orbit_z = math.cos(pc.dt) * 400.0
-        
+
         vmath.lookAt(orbit_x, 200.0, orbit_z, 0.0, 0.0, 0.0, view)
         vmath.multiply_mat4(proj, view, pc.viewProj)
 
-        -- [Future Target: Record & vkQueueSubmit]
-        -- [Future Target: vkQueuePresentKHR]
+        -- >>> RENDERER EXECUTION PATCH <<<
+        local cmd_buffer = cmd_factory.AllocateBuffer(vk, device, cmd_state)
+
+        local success = renderer.ExecuteFrame(
+            vk, device, queue, sc_state, cmd_buffer,
+            cmd_state.current_frame, sync_state, frame_state,
+            master_buf, comp_state, gfx_state, pc
+        )
+
+        if not success then
+            print("[RENDERER] Swapchain out of date! Rebuild required.")
+        end
+        -- >>> END PATCH <<<
 
         cmd_factory.AdvanceFrame(cmd_state)
         frame_count = frame_count + 1
@@ -106,7 +115,6 @@ local function render_fiber(vk, device, sc_state, queue, cmd_state)
     end
     print("[LUA CO] Render Fiber Terminated. Frames: " .. tostring(frame_count))
 end
-
 local function command_glfw_fiber()
     print("[LUA IO] Booting Headless...")
 
@@ -140,8 +148,12 @@ local function command_glfw_fiber()
     local gfx_state = graphics.Init(vk, vk_state, pWidth[0], pHeight[0], desc_state.pipelineLayout, sc_state.format)
     local cmd_state = cmd_factory.Init(vk, device, vk_state.qIndex, 3)
 
+    -- >>> NEW: RENDERER INITIALIZATION <<<
+    local sync_state = renderer.InitSync(vk, device, 3)
+    local frame_state = renderer.AllocateFrameState(sc_state.extent.width, sc_state.extent.height)
+
     start_fiber(function()
-        render_fiber(vk, device, sc_state, vk_state.queue, cmd_state)
+        render_fiber(vk, device, sc_state, vk_state.queue, cmd_state, sync_state, frame_state, memory.Buffers["MASTER_GPU_BLOCK"], comp_state, gfx_state)
     end)
 
     local window_active = true
@@ -158,6 +170,7 @@ local function command_glfw_fiber()
     end
 
     cmd_factory.Destroy(vk, device, cmd_state)
+    renderer.Destroy(vk, device, sync_state, 3)
     graphics.Destroy(vk, vk_state, gfx_state)
     compute.Destroy(vk, vk_state, comp_state)
     descriptors.Destroy(vk, device, desc_state)
