@@ -1,49 +1,18 @@
 local ffi = require("ffi")
 local bit = require("bit")
 
-ffi.cdef[[
-    typedef struct VkRenderingAttachmentInfo_Core13 {
-        uint32_t sType;
-        const void* pNext;
-        VkImageView imageView;
-        uint32_t imageLayout;
-        uint32_t resolveMode;
-        VkImageView resolveImageView;
-        uint32_t resolveImageLayout;
-        uint32_t loadOp;
-        uint32_t storeOp;
-        VkClearValue clearValue;
-    } VkRenderingAttachmentInfo_Core13;
-
-    typedef struct VkRenderingInfo_Core13 {
-        uint32_t sType;
-        const void* pNext;
-        uint32_t flags;
-        VkRect2D renderArea;
-        uint32_t layerCount;
-        uint32_t viewMask;
-        uint32_t colorAttachmentCount;
-        const VkRenderingAttachmentInfo_Core13* pColorAttachments;
-        const VkRenderingAttachmentInfo_Core13* pDepthAttachment;
-        const VkRenderingAttachmentInfo_Core13* pStencilAttachment;
-    } VkRenderingInfo_Core13;
-]]
--- ============================================================================
--- INITIALIZATION
--- ============================================================================
 local Renderer = {}
 
 function Renderer.InitSync(vk, device, frames_in_flight)
     print("[RENDERER] Forging Synchronization Primitives...")
-
     local imageAvailable = ffi.new("VkSemaphore[?]", frames_in_flight)
     local renderFinished = ffi.new("VkSemaphore[?]", frames_in_flight)
     local inFlight = ffi.new("VkFence[?]", frames_in_flight)
 
-    local semInfo = ffi.new("VkSemaphoreCreateInfo", { sType = 9 }) -- VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
-    local fenceInfo = ffi.new("VkFenceCreateInfo", { 
-        sType = 8, -- VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
-        flags = 1  -- VK_FENCE_CREATE_SIGNALED_BIT
+    local semInfo = ffi.new("VkSemaphoreCreateInfo", { sType = 9 })
+    local fenceInfo = ffi.new("VkFenceCreateInfo", {
+        sType = 8,
+        flags = 1
     })
 
     for i = 0, frames_in_flight - 1 do
@@ -59,50 +28,46 @@ function Renderer.InitSync(vk, device, frames_in_flight)
     }
 end
 
--- ZERO GC MANDATE: Pre-allocate all frame structs here.
 function Renderer.AllocateFrameState(vk, device, width, height)
     local state = {}
-
-    -- Execution State
+    
     state.pImageIndex = ffi.new("uint32_t[1]")
     state.cmdBeginInfo = ffi.new("VkCommandBufferBeginInfo", { sType = 42 })
 
-    -- Compute Memory Barrier (Compute Write -> Graphics Read)
     state.computeBarrier = ffi.new("VkMemoryBarrier", {
         sType = 46,
-        srcAccessMask = 32, -- VK_ACCESS_SHADER_WRITE_BIT
-        dstAccessMask = bit.bor(1, 512) -- VERTEX_ATTRIBUTE_READ | INDIRECT_COMMAND_READ
+        srcAccessMask = 32,
+        dstAccessMask = bit.bor(1, 512)
     })
 
-    -- Image Barriers (Pre-Render)
     state.colorBarrierIn = ffi.new("VkImageMemoryBarrier", {
         sType = 45,
-        oldLayout = 0, -- UNDEFINED
-        newLayout = 2, -- COLOR_ATTACHMENT_OPTIMAL
-        srcQueueFamilyIndex = 4294967295, -- IGNORED
+        oldLayout = 0,
+        newLayout = 2,
+        srcQueueFamilyIndex = 4294967295,
         dstQueueFamilyIndex = 4294967295,
         subresourceRange = { aspectMask = 1, levelCount = 1, layerCount = 1 },
         srcAccessMask = 0,
-        dstAccessMask = 256 -- COLOR_ATTACHMENT_WRITE
+        dstAccessMask = 256
     })
 
     state.depthBarrierIn = ffi.new("VkImageMemoryBarrier", {
         sType = 45,
         oldLayout = 0,
-        newLayout = 3, -- VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL (Fixed!)
+        newLayout = 3,
         srcQueueFamilyIndex = 4294967295,
         dstQueueFamilyIndex = 4294967295,
         subresourceRange = { aspectMask = 2, levelCount = 1, layerCount = 1 },
         srcAccessMask = 0,
-        dstAccessMask = 1024 -- DEPTH_STENCIL_ATTACHMENT_WRITE
+        dstAccessMask = 1024
     })
+
     state.preBarriers = ffi.new("VkImageMemoryBarrier[2]", {state.colorBarrierIn, state.depthBarrierIn})
 
-    -- Image Barrier (Post-Render to Present)
     state.colorBarrierOut = ffi.new("VkImageMemoryBarrier", {
         sType = 45,
         oldLayout = 2,
-        newLayout = 1000001002, -- PRESENT_SRC_KHR
+        newLayout = 1000001002,
         srcQueueFamilyIndex = 4294967295,
         dstQueueFamilyIndex = 4294967295,
         subresourceRange = { aspectMask = 1, levelCount = 1, layerCount = 1 },
@@ -110,8 +75,9 @@ function Renderer.AllocateFrameState(vk, device, width, height)
         dstAccessMask = 0
     })
 
-    state.colorAttachment = ffi.new("VkRenderingAttachmentInfo_Core13[1]")
-    state.colorAttachment[0].sType = ffi.cast("uint32_t", 1000044000)
+    -- KHR Native Structs to appease Validation Layers
+    state.colorAttachment = ffi.new("VkRenderingAttachmentInfoKHR[1]")
+    state.colorAttachment[0].sType = 1000044000
     state.colorAttachment[0].imageLayout = 2
     state.colorAttachment[0].loadOp = 0
     state.colorAttachment[0].storeOp = 0
@@ -120,15 +86,15 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     state.colorAttachment[0].clearValue.color.float32[2] = 0.02
     state.colorAttachment[0].clearValue.color.float32[3] = 1.0
 
-    state.depthAttachment = ffi.new("VkRenderingAttachmentInfo_Core13[1]")
-    state.depthAttachment[0].sType = ffi.cast("uint32_t", 1000044000)
+    state.depthAttachment = ffi.new("VkRenderingAttachmentInfoKHR[1]")
+    state.depthAttachment[0].sType = 1000044000
     state.depthAttachment[0].imageLayout = 3
     state.depthAttachment[0].loadOp = 0
     state.depthAttachment[0].storeOp = 1
     state.depthAttachment[0].clearValue.depthStencil.depth = 0.0
 
-    state.renderInfo = ffi.new("VkRenderingInfo_Core13[1]")
-    state.renderInfo[0].sType = ffi.cast("uint32_t", 1000044001)
+    state.renderInfo = ffi.new("VkRenderingInfoKHR[1]")
+    state.renderInfo[0].sType = 1000044001
     state.renderInfo[0].renderArea.extent.width = width
     state.renderInfo[0].renderArea.extent.height = height
     state.renderInfo[0].layerCount = 1
@@ -136,99 +102,94 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     state.renderInfo[0].pColorAttachments = state.colorAttachment
     state.renderInfo[0].pDepthAttachment = state.depthAttachment
 
-    -- Pipeline State
     state.viewport = ffi.new("VkViewport[1]", {{ 0.0, 0.0, width, height, 0.0, 1.0 }})
     state.scissor = ffi.new("VkRect2D[1]", {{ {0, 0}, {width, height} }})
     state.offsets = ffi.new("VkDeviceSize[1]", {0})
 
-    -- Submit & Present State
-    state.submitInfo = ffi.new("VkSubmitInfo", { sType = 4, waitSemaphoreCount = 1, commandBufferCount = 1, signalSemaphoreCount = 1 })
-    state.waitStages = ffi.new("int32_t[1]", { 256 }) -- COLOR_ATTACHMENT_OUTPUT
+    state.submitInfo = ffi.new("VkSubmitInfo", { 
+        sType = 4, 
+        waitSemaphoreCount = 1, 
+        commandBufferCount = 1, 
+        signalSemaphoreCount = 1 
+    })
+    
+    state.waitStages = ffi.new("int32_t[1]", { 256 })
     state.submitInfo.pWaitDstStageMask = state.waitStages
     state.cmdPtr = ffi.new("VkCommandBuffer[1]")
 
-    -- Swapchain Present must remain KHR, as it is strictly an extension
     state.presentInfo = ffi.new("VkPresentInfoKHR", {
         sType = 1000001001,
         waitSemaphoreCount = 1,
         swapchainCount = 1
     })
 
-    -- API Function pointers for Core 1.3 Dynamic Rendering (Stripped KHR)
-    state.vkCmdBeginRendering = ffi.cast("PFN_vkCmdBeginRendering", vk.vkGetDeviceProcAddr(device, "vkCmdBeginRendering"))
-    state.vkCmdEndRendering = ffi.cast("PFN_vkCmdEndRendering", vk.vkGetDeviceProcAddr(device, "vkCmdEndRendering"))
-
-    assert(state.vkCmdBeginRendering ~= ffi.NULL and state.vkCmdEndRendering ~= ffi.NULL,
-           "FATAL: Core 1.3 Dynamic Rendering Pointers Returned NULL!")
+    -- Loading KHR Extension Pointers directly
+    state.vkCmdBeginRendering = ffi.cast("PFN_vkCmdBeginRenderingKHR", vk.vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR"))
+    state.vkCmdEndRendering = ffi.cast("PFN_vkCmdEndRenderingKHR", vk.vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR"))
+    assert(state.vkCmdBeginRendering ~= ffi.NULL and state.vkCmdEndRendering ~= ffi.NULL, "FATAL: KHR Dynamic Rendering Pointers Missing!")
 
     return state
 end
 
--- ============================================================================
--- HOT LOOP EXECUTION (ZERO GC)
--- ============================================================================
 function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current_frame, sync, f_state, unified_buffer, p_compute, p_gfx, pc_bytes, desc_state)
     local inFlightFence = sync.inFlight[current_frame]
     local imageAvailable = sync.imageAvailable[current_frame]
     local renderFinished = sync.renderFinished[current_frame]
 
-    -- 1. Wait and Reset
     vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {inFlightFence}), 1, 0xFFFFFFFFFFFFFFFF)
 
     local res = vk.vkAcquireNextImageKHR(device, swapchain.handle, 0xFFFFFFFFFFFFFFFF, imageAvailable, nil, f_state.pImageIndex)
-    if res == 1000001004 then return false end -- VK_ERROR_OUT_OF_DATE_KHR (Resize needed)
+    if res == 1000001004 then return false end
 
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {inFlightFence}))
     vk.vkResetCommandBuffer(cmd_buffer, 0)
 
-    -- 2. Record Command Buffer
     vk.vkBeginCommandBuffer(cmd_buffer, f_state.cmdBeginInfo)
 
-
-    -- === PASS A: COMPUTE ===
-    vk.vkCmdBindPipeline(cmd_buffer, 1, p_compute.pipeline) -- 1 = VK_PIPELINE_BIND_POINT_COMPUTE
+    -- === COMPUTE PASS ===
+    vk.vkCmdBindPipeline(cmd_buffer, 1, p_compute.pipeline)
     vk.vkCmdBindDescriptorSets(cmd_buffer, 1, p_compute.pipelineLayout, 0, 1, ffi.new("VkDescriptorSet[1]", {desc_state.set0}), 0, nil)
-
-    -- 33 = STAGE_ALL (Vertex | Compute)
-    -- FORCE exactly 64 bytes to prevent a Vulkan Validation Crash!
     vk.vkCmdPushConstants(cmd_buffer, desc_state.pipelineLayout, 33, 0, 64, pc_bytes)
     vk.vkCmdDispatch(cmd_buffer, 1024, 1, 1)
 
-    -- Barrier: Compute Write -> Graphics Read
     vk.vkCmdPipelineBarrier(cmd_buffer, 2048, bit.bor(128, 65536), 0, 1, ffi.new("VkMemoryBarrier[1]", {f_state.computeBarrier}), 0, nil, 0, nil)
 
-    -- === PASS B: GRAPHICS ===
+    -- === GRAPHICS BARRIERS ===
     local imgIndex = f_state.pImageIndex[0]
-
-    -- Pre-Render Barriers (Transition to Color/Depth Optimal)
     f_state.preBarriers[0].image = swapchain.images[imgIndex]
     f_state.preBarriers[1].image = p_gfx.depthImage
+
     vk.vkCmdPipelineBarrier(cmd_buffer, 1, bit.bor(256, 1024), 0, 0, nil, 0, nil, 2, f_state.preBarriers)
 
+    -- === DYNAMIC RENDERING GRAPHICS PASS ===
     f_state.colorAttachment[0].imageView = swapchain.imageViews[imgIndex]
     f_state.depthAttachment[0].imageView = p_gfx.depthImageView
-
-    -- Cast iron-clad struct to void* for the function pointer
-    f_state.vkCmdBeginRendering(cmd_buffer, ffi.cast("const void*", f_state.renderInfo))
+    
+    f_state.vkCmdBeginRendering(cmd_buffer, f_state.renderInfo)
 
     vk.vkCmdBindPipeline(cmd_buffer, 0, p_gfx.pipeline)
+    
+    -- FIXED: Missing Descriptor Bind for the Graphics Pipeline
+    vk.vkCmdBindDescriptorSets(cmd_buffer, 0, p_gfx.pipelineLayout, 0, 1, ffi.new("VkDescriptorSet[1]", {desc_state.set0}), 0, nil)
+
     vk.vkCmdSetViewport(cmd_buffer, 0, 1, f_state.viewport)
     vk.vkCmdSetScissor(cmd_buffer, 0, 1, f_state.scissor)
+    
     vk.vkCmdBindVertexBuffers(cmd_buffer, 0, 1, ffi.new("VkBuffer[1]", {unified_buffer}), f_state.offsets)
-
-    -- p_gfx.pipelineLayout is now valid
     vk.vkCmdPushConstants(cmd_buffer, p_gfx.pipelineLayout, 33, 0, 64, pc_bytes)
-
+    
     vk.vkCmdDraw(cmd_buffer, pc_bytes.particle_count, 1, 0, 0)
+
     f_state.vkCmdEndRendering(cmd_buffer)
 
-    -- Post-Render Barrier (Transition to Present)
+    -- === OUTPUT BARRIER ===
     f_state.colorBarrierOut.image = swapchain.images[imgIndex]
-    vk.vkCmdPipelineBarrier(cmd_buffer, 256, 8192, 0, 0, nil, 0, nil, 1, ffi.new("VkImageMemoryBarrier[1]", {f_state.colorBarrierOut}))
+    
+    -- FIXED: Stage Mask Alignment (1024 = COLOR_ATTACHMENT_OUTPUT_BIT)
+    vk.vkCmdPipelineBarrier(cmd_buffer, 1024, 8192, 0, 0, nil, 0, nil, 1, ffi.new("VkImageMemoryBarrier[1]", {f_state.colorBarrierOut}))
 
     vk.vkEndCommandBuffer(cmd_buffer)
 
-    -- 3. Submit
     f_state.cmdPtr[0] = cmd_buffer
     f_state.submitInfo.pWaitSemaphores = ffi.new("VkSemaphore[1]", {imageAvailable})
     f_state.submitInfo.pCommandBuffers = f_state.cmdPtr
@@ -236,7 +197,6 @@ function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current
 
     vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo[1]", {f_state.submitInfo}), inFlightFence)
 
-    -- 4. Present
     f_state.presentInfo.pWaitSemaphores = ffi.new("VkSemaphore[1]", {renderFinished})
     f_state.presentInfo.pSwapchains = ffi.new("VkSwapchainKHR[1]", {swapchain.handle})
     f_state.presentInfo.pImageIndices = f_state.pImageIndex
@@ -248,10 +208,9 @@ end
 
 function Renderer.Destroy(vk, device, sync, frames_in_flight)
     print("[TEARDOWN] Dismantling Renderer Sync Objects...")
-    -- User explicitly requested vkDeviceWaitIdle factor-in
     vk.vkDeviceWaitIdle(device)
-
     if not sync then return end
+    
     for i = 0, frames_in_flight - 1 do
         vk.vkDestroySemaphore(device, sync.imageAvailable[i], nil)
         vk.vkDestroySemaphore(device, sync.renderFinished[i], nil)
