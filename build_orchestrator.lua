@@ -35,9 +35,9 @@ local function compile_engine(platform)
         -- LINUX BUILD PIPELINE
         -- ==========================================
         print("\n[1/2] Compiling SPIR-V Shaders...")
-        -- os.execute("glslc render.vert -o render_vert.spv")
-        -- os.execute("glslc render.frag -o render_frag.spv")
-        -- os.execute("glslc swarm.comp -o swarm_comp.spv")
+        os.execute("glslc render.vert -o render_vert.spv")
+        os.execute("glslc render.frag -o render_frag.spv")
+        os.execute("glslc swarm.comp -o swarm_comp.spv")
 
         print("\n[2/2] Compiling Vulkan-Engine (Monolithic AVX2 Host) ...")
 
@@ -55,9 +55,9 @@ local function compile_engine(platform)
         -- ==========================================
         print("\n[1/3] Compiling SPIR-V Shaders...")
         local glslc = VULKAN_SDK_PATH .. "/Bin/glslc.exe"
-        -- os.execute(glslc .. " render.vert -o render_vert.spv")
-        -- os.execute(glslc .. " render.frag -o render_frag.spv")
-        -- os.execute("glslc swarm.comp -o swarm_comp.spv")
+        os.execute(glslc .. " render.vert -o render_vert.spv")
+        os.execute(glslc .. " render.frag -o render_frag.spv")
+        os.execute("glslc swarm.comp -o swarm_comp.spv")
 
         print("\n[2/3] Compiling Vulkan-Engine.exe (Monolithic AVX2 Host) ...")
 

@@ -6,6 +6,7 @@ local swapchain_core = require("swapchain")
 local descriptors = require("descriptors")
 local compute = require("compute_pipeline")
 local graphics = require("graphics_pipeline")
+local cmd_factory = require("command_factory")
 
 ffi.cdef[[
     int vibe_get_is_running();
@@ -15,47 +16,112 @@ ffi.cdef[[
     void vibe_publish_vk_instance(void* instance);
     void* vibe_get_vk_surface();
     void vibe_get_window_size(int* width, int* height);
+    void vibe_set_glfw_cmd(int cmd, int w, int h);
+    int vibe_get_last_key();
 ]]
 
 local active_coroutines = {}
-local function start_coroutine(func) table.insert(active_coroutines, coroutine.create(func)) end
+local co_blockers = {} 
 
-local function phase_three_bootstrap()
-    print("[LUA CO] Bootstrapping Vulkan Instance...")
+local function start_fiber(func) 
+    local co = coroutine.create(func)
+    table.insert(active_coroutines, co)
+    co_blockers[co] = function() return true end 
+end
+
+local function run_weaver()
+    while ffi.C.vibe_get_is_running() == 1 do
+        for i = #active_coroutines, 1, -1 do
+            local co = active_coroutines[i]
+            local blocker = co_blockers[co]
+            
+            if not blocker or blocker() then
+                local success, next_blocker = coroutine.resume(co)
+                assert(success, "FATAL: FIBER CRASH -> " .. tostring(next_blocker))
+                
+                if coroutine.status(co) == "dead" then
+                    table.remove(active_coroutines, i)
+                    co_blockers[co] = nil
+                else
+                    co_blockers[co] = next_blocker 
+                end
+            end
+        end
+        if #active_coroutines == 0 then break end
+    end
+end
+
+local function render_fiber(vk, device, sc_state, queue, cmd_state)
+    print("[LUA CO] Render Fiber Weaving...")
+    local frame_count = 0
+    
+    while ffi.C.vibe_get_is_running() == 1 do
+        cmd_factory.ResetCurrentFrame(vk, device, cmd_state)
+        
+        -- [Future Target: vkAcquireNextImageKHR]
+        -- [Future Target: allocate buffer via cmd_factory.AllocateBuffer()]
+        -- [Future Target: Record & vkQueueSubmit]
+        -- [Future Target: vkQueuePresentKHR]
+        
+        cmd_factory.AdvanceFrame(cmd_state)
+        frame_count = frame_count + 1
+        
+        coroutine.yield(function() return true end)
+    end
+    print("[LUA CO] Render Fiber Terminated. Frames: " .. tostring(frame_count))
+end
+
+local function command_glfw_fiber()
+    print("[LUA IO] Booting Headless...")
+    
     local vk_state = vulkan_core.create_instance()
     ffi.C.vibe_publish_vk_instance(vk_state.instance)
-    
-    local surface_ptr = nil
-    while ffi.C.vibe_get_is_running() == 1 do
-        surface_ptr = ffi.C.vibe_get_vk_surface()
-        if surface_ptr ~= nil then break end
-        coroutine.yield()
-    end
 
+    print("[LUA IO] Ordering C-Core to Boot GLFW Window...")
+    ffi.C.vibe_set_glfw_cmd(1, 1280, 720) 
+
+    coroutine.yield(function() 
+        return ffi.C.vibe_get_vk_surface() ~= nil 
+    end)
+    
+    local surface_ptr = ffi.C.vibe_get_vk_surface()
     vulkan_core.finalize_device_and_swapchain(vk_state, surface_ptr)
+    
     local vk = vk_state.vk
     local device = vk_state.device
 
-    -- Memory Subsystem
     local UNIVERSE_SIZE = 256 * 1024 * 1024
-    local usage_flags = bit.bor(32, 256); -- STORAGE + INDIRECT
+    local usage_flags = bit.bor(32, 256)
     memory.CreateHostVisibleBuffer("MASTER_GPU_BLOCK", "uint8_t", UNIVERSE_SIZE, usage_flags, vk_state)
 
-    -- Viewport constraints
     local pWidth = ffi.new("int[1]")
     local pHeight = ffi.new("int[1]")
     ffi.C.vibe_get_window_size(pWidth, pHeight)
 
-    -- Engine Subsystems
     local sc_state = swapchain_core.Init(vk, vk_state, pWidth[0], pHeight[0])
     local desc_state = descriptors.Init(vk, device, memory.Buffers["MASTER_GPU_BLOCK"])
     local comp_state = compute.Init(vk, device, desc_state.pipelineLayout)
     local gfx_state = graphics.Init(vk, vk_state, pWidth[0], pHeight[0], desc_state.pipelineLayout, sc_state.format)
+    local cmd_state = cmd_factory.Init(vk, device, vk_state.qIndex, 3)
+    
+    start_fiber(function() 
+        render_fiber(vk, device, sc_state, vk_state.queue, cmd_state) 
+    end)
 
-    print("[LUA CO] Phase 3 Pipeline Handshake Complete! Triggering Safe Shutdown...")
-    ffi.C.vibe_trigger_shutdown()
+    local window_active = true
+    while window_active do
+        local key = ffi.C.vibe_get_last_key()
+        
+        if key == 256 then 
+            print("[LUA IO] ESCAPE PRESSED. Executing Teardown...")
+            ffi.C.vibe_trigger_shutdown()
+            window_active = false
+        end
+        
+        coroutine.yield(function() return true end) 
+    end
 
-    -- Teardown
+    cmd_factory.Destroy(vk, device, cmd_state)
     graphics.Destroy(vk, vk_state, gfx_state)
     compute.Destroy(vk, vk_state, comp_state)
     descriptors.Destroy(vk, device, desc_state)
@@ -64,17 +130,6 @@ local function phase_three_bootstrap()
     vulkan_core.Destroy(vk_state)
 end
 
-start_coroutine(phase_three_bootstrap)
-
-while ffi.C.vibe_get_is_running() == 1 do
-    for i = #active_coroutines, 1, -1 do
-        local co = active_coroutines[i]
-        if coroutine.status(co) ~= "dead" then
-            local success, err = coroutine.resume(co)
-            assert(success, "FATAL: COROUTINE CRASHED: " .. tostring(err))
-        else
-            table.remove(active_coroutines, i)
-        end
-    end
-end
+start_fiber(command_glfw_fiber)
+run_weaver()
 ffi.C.vibe_mark_lua_finished()
