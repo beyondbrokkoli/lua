@@ -9,11 +9,11 @@ local Renderer = {}
 
 function Renderer.InitSync(vk, device, frames_in_flight)
     print("[RENDERER] Forging Synchronization Primitives...")
-    
+
     local imageAvailable = ffi.new("VkSemaphore[?]", frames_in_flight)
     local renderFinished = ffi.new("VkSemaphore[?]", frames_in_flight)
     local inFlight = ffi.new("VkFence[?]", frames_in_flight)
-    
+
     local semInfo = ffi.new("VkSemaphoreCreateInfo", { sType = 9 }) -- VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
     local fenceInfo = ffi.new("VkFenceCreateInfo", { 
         sType = 8, -- VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
@@ -59,11 +59,11 @@ function Renderer.AllocateFrameState(vk, device, width, height)
         srcAccessMask = 0,
         dstAccessMask = 256 -- COLOR_ATTACHMENT_WRITE
     })
-    
+
     state.depthBarrierIn = ffi.new("VkImageMemoryBarrier", {
         sType = 45,
         oldLayout = 0,
-        newLayout = 252, -- DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        newLayout = 3, -- VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL (Fixed!)
         srcQueueFamilyIndex = 4294967295,
         dstQueueFamilyIndex = 4294967295,
         subresourceRange = { aspectMask = 2, levelCount = 1, layerCount = 1 },
@@ -97,7 +97,7 @@ function Renderer.AllocateFrameState(vk, device, width, height)
 
     state.depthAttachment = ffi.new("VkRenderingAttachmentInfo[1]")
     state.depthAttachment[0].sType = 1000044000
-    state.depthAttachment[0].imageLayout = 252
+    state.depthAttachment[0].imageLayout = 3
     state.depthAttachment[0].loadOp = 0 -- CLEAR
     state.depthAttachment[0].storeOp = 2 -- DONT_CARE
     state.depthAttachment[0].clearValue.depthStencil.depth = 0.0
@@ -108,7 +108,7 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     state.renderInfo.renderArea.extent.height = height
     state.renderInfo.layerCount = 1
     state.renderInfo.colorAttachmentCount = 1
-    
+
     state.renderInfo.pColorAttachments = state.colorAttachment
     state.renderInfo.pDepthAttachment = state.depthAttachment
 
@@ -178,9 +178,9 @@ function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current
     f_state.preBarriers[1].image = p_gfx.depthImage
     vk.vkCmdPipelineBarrier(cmd_buffer, 1, bit.bor(256, 1024), 0, 0, nil, 0, nil, 2, f_state.preBarriers)
 
-    -- Dynamic Rendering Begin
-    f_state.renderInfo.pColorAttachments[0].imageView = swapchain.imageViews[imgIndex]
-    f_state.renderInfo.pDepthAttachment[0].imageView = p_gfx.depthImageView
+    -- Dynamic Rendering Begin (Write to our mutable backing array to bypass 'const' pointer restriction)
+    f_state.colorAttachment[0].imageView = swapchain.imageViews[imgIndex]
+    f_state.depthAttachment[0].imageView = p_gfx.depthImageView
     f_state.vkCmdBeginRendering(cmd_buffer, f_state.renderInfo)
 
     vk.vkCmdBindPipeline(cmd_buffer, 0, p_gfx.pipeline) -- GRAPHICS
