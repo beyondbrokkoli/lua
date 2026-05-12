@@ -12,7 +12,7 @@ $ ./boot.exe
 [LUA] Window Surface Linked from Main Thread!
 [LUA] Hardware GPU Selected!
 [LUA] Logical Device Created!
-[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x01e38109c9d8
+[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x01c179551718
 [MEMORY] ReBAR Supported! Streaming directly to VRAM.
 [MEMORY] Allocated & Mapped VRAM Buffer: MASTER_GPU_BLOCK (256.00 MB)
 [SWAPCHAIN] Building the display chain...
@@ -22,17 +22,13 @@ $ ./boot.exe
 [COMPUTE] Compiling Swarm Intelligence...
 [COMPUTE] Swarm Pipeline Ready!
 [GRAPHICS] Building Reverse-Z Depth Buffer and Shader Modules...
-
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_FRAGMENT_BIT has a declared Input at Location 0 Component 0  but the previous stage (VK_SHADER_STAGE_VERTEX_BIT) has no Output declared there.
-The input variable is:
-  pointer to Input -> vec4 of float32
-The Vulkan spec states: Any user-defined variables shared between the OpEntryPoint of two shader stages, and declared with Input as its Storage Class for the subsequent shader stage, must have all Location slots and Component words declared in the preceding shader stage's OpEntryPoint with Output as the Storage Class (https://docs.vulkan.org/spec/latest/appendices/spirvenv.html#VUID-RuntimeSpirv-OpEntryPoint-08743)
-
 [GRAPHICS] Swarm Pipeline Successfully Compiled!
 [FACTORY] Forging Triple-Buffered Command Matrix...
 [LUA CO] Render Fiber Weaving...
-
-[LUA FATAL ERROR] main.lua:40: FATAL: FIBER CRASH -> .\command_factory.lua:30: missing declaration for symbol 'vkResetCommandPool'
+[LUA IO] ESCAPE PRESSED. Executing Teardown...
 [LUA-OS-THREAD] VM Destroyed.
+
+[C-CORE] Shutdown triggered. Waiting for Lua VM...
+[C-CORE] Clean Exit.
+
+AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua
