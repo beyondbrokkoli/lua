@@ -12,7 +12,7 @@ $ ./boot.exe
 [LUA] Window Surface Linked from Main Thread!
 [LUA] Hardware GPU Selected!
 [LUA] Logical Device Created!
-[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x0209e53bd068
+[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x0250fe54e928
 [MEMORY] ReBAR Supported! Streaming directly to VRAM.
 [MEMORY] Allocated & Mapped VRAM Buffer: MASTER_GPU_BLOCK (256.00 MB)
 [SWAPCHAIN] Building the display chain...
@@ -43,18 +43,6 @@ The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INF
 SEVERITY: 4096
 MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pDepthAttachment->sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO.
 The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
-
-
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pDepthAttachment->storeOp (2) does not fall within the begin..end range of the VkAttachmentStoreOp enumeration tokens and is not an extension added token.
-The Vulkan spec states: storeOp must be a valid VkAttachmentStoreOp value (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-storeOp-parameter)
-
-
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBindVertexBuffers(): pBuffers[0] (VkBuffer 0x30000000003) was created with VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_2_INDIRECT_BUFFER_BIT but requires VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT.
-The Vulkan spec states: All elements of pBuffers must have been created with the VK_BUFFER_USAGE_VERTEX_BUFFER_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/fxvertex.html#VUID-vkCmdBindVertexBuffers-pBuffers-00627)
 
 
 [VULKAN LAYER ENFORCER]
