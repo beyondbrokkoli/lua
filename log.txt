@@ -1,4 +1,18 @@
 AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua
+$ git pull
+remote: Enumerating objects: 5, done.
+remote: Counting objects: 100% (5/5), done.
+remote: Compressing objects: 100% (1/1), done.
+remote: Total 3 (delta 2), reused 3 (delta 2), pack-reused 0 (from 0)
+Unpacking objects: 100% (3/3), 750 bytes | 10.00 KiB/s, done.
+From https://github.com/beyondbrokkoli/lua
+   95b0941..3491116  main       -> origin/main
+Updating 95b0941..3491116
+Fast-forward
+ vulkan_headers.lua | 930 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++------------------------------------------------------------------
+ 1 file changed, 465 insertions(+), 465 deletions(-)
+
+AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua
 $ ./boot.exe
 [C-CORE] Booting Headless Worker...
 [LUA-OS-THREAD] Booting Lua VM...
@@ -12,7 +26,7 @@ $ ./boot.exe
 [LUA] Window Surface Linked from Main Thread!
 [LUA] Hardware GPU Selected!
 [LUA] Logical Device Created!
-[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x01d943ede188
+[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x01e1c5d2be58
 [MEMORY] ReBAR Supported! Streaming directly to VRAM.
 [MEMORY] Allocated & Mapped VRAM Buffer: MASTER_GPU_BLOCK (256.00 MB)
 [SWAPCHAIN] Building the display chain...
@@ -25,158 +39,326 @@ $ ./boot.exe
 [GRAPHICS] Swarm Pipeline Successfully Compiled!
 [FACTORY] Forging Triple-Buffered Command Matrix...
 [RENDERER] Forging Synchronization Primitives...
-[LUA CO] Render Fiber Weaving...
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->sType must be VK_STRUCTURE_TYPE_RENDERING_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_INFO (https://docs.vulkan.org/spec
-/latest/chapters/renderpass.html#VUID-VkRenderingInfo-sType-sType)
+[LUA FATAL ERROR] main.lua:55: FATAL: FIBER CRASH -> .\renderer.lua:79: declaration specifier expected near 'VkRenderingAttachmentInfoKHR'
+[LUA-OS-THREAD] VM Destroyed.
 
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pColorAttachments[0].sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
+AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua
+$ cat parse.py
+import xml.etree.ElementTree as ET
+TARGET_FUNCTIONS = {
+    # Instance/Device/Queues
+    "vkCreateInstance", "vkEnumeratePhysicalDevices", "vkCreateDevice", "vkDestroyInstance", "vkDestroyDevice",
+    "vkQueueSubmit", "vkQueueWaitIdle", "vkDeviceWaitIdle", "vkGetPhysicalDeviceQueueFamilyProperties",
+    "vkGetDeviceQueue", "vkGetDeviceProcAddr",
 
+    # Memory/Buffers (The ReBAR Allocator)
+    "vkGetPhysicalDeviceMemoryProperties", "vkCreateBuffer", "vkDestroyBuffer",
+    "vkGetBufferMemoryRequirements", "vkAllocateMemory", "vkBindBufferMemory",
+    "vkMapMemory", "vkUnmapMemory", "vkFreeMemory",
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pDepthAttachment->sType must be VK_STRUCTURE_TYPE_RE
-NDERING_ATTACHMENT_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulk
-an.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
+    # Descriptors (The Wiring)
+    "vkCreateDescriptorSetLayout", "vkCreateDescriptorPool", "vkAllocateDescriptorSets",
+    "vkUpdateDescriptorSets", "vkDestroyDescriptorPool", "vkDestroyDescriptorSetLayout",
 
+    # Pipelines & Shaders
+    "vkCreateShaderModule", "vkDestroyShaderModule",
+    "vkCreateGraphicsPipelines", "vkCreateComputePipelines",
+    "vkCreatePipelineLayout", "vkDestroyPipeline", "vkDestroyPipelineLayout",
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdDraw(): The VkPipeline 0x170000000017 statically uses descriptor set 0, but because a descriptor was never bound, the pipeline layouts are not compatible.
-If using a descriptor, make sure to call one of vkCmdBindDescriptorSets, vkCmdPushDescriptorSet, vkCmdSetDescriptorBufferOffset, etc for VK_PIPELINE_BIND_POINT_GRAPHICS.
-The Vulkan spec states: If a a bound shader was created as a VkShaderEXT without the VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT flag or as part of a pipeline without the VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT flag, and that shader statically uses a set n, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the V
-kPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://docs.vulkan.org
-/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-08600)
+    # Depth Buffer
+    "vkCreateImage", "vkGetImageMemoryRequirements", "vkBindImageMemory",
+    "vkDestroyImage",
 
+    # Command Buffers
+    "vkCreateCommandPool", "vkDestroyCommandPool", "vkResetCommandPool", "vkAllocateCommandBuffers",
+    "vkBeginCommandBuffer", "vkEndCommandBuffer", "vkResetCommandBuffer",
+    "vkCmdBindPipeline", "vkCmdBindDescriptorSets", "vkCmdPushConstants",
+    "vkCmdDispatch", "vkCmdPipelineBarrier",
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdPipelineBarrier(): pImageMemoryBarriers[0].srcAccessMask (VK_ACCESS_2_COLOR_ATTACHMENT
-_WRITE_BIT) is not supported by stage mask (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT).
-The Vulkan spec states: For each element of pImageMemoryBarriers, if its srcQueueFamilyIndex and dst
-QueueFamilyIndex members are equal, or if its srcQueueFamilyIndex is the queue family index that was used to create the command pool that commandBuffer was allocated from, then its srcAccessMask member must only contain access flags that are supported by one or more of the pipeline stages in srcStageMask, as specified in the table of supported access types (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-vkCmdPipelineBarrier-pImageMemoryBarriers-02819)
+    # Draw Operations
+    "vkCmdSetViewport",
+    "vkCmdSetScissor",
+    "vkCmdBindVertexBuffers",
+    "vkCmdDrawIndirect",
+    "vkCmdFillBuffer",
 
+    # Graphics/Rendering specific
+    "vkCmdBeginRendering", "vkCmdDraw", "vkCmdEndRendering",
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->sType must be VK_STRUCTURE_TYPE_RENDERING_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_INFO (https://docs.vulkan.org/spec
-/latest/chapters/renderpass.html#VUID-VkRenderingInfo-sType-sType)
+    # Swapchain & Sync
+    "vkCreateSemaphore", "vkDestroySemaphore", "vkRenderingAttachementInfoKHR",
+    "vkAcquireNextImageKHR", "vkCreateSwapchainKHR", "vkDestroySwapchainKHR", "vkQueuePresentKHR",
+    "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", "vkGetSwapchainImagesKHR", "vkCreateImageView",
+    "vkDestroyImageView", "vkDestroySurfaceKHR",
+    "vkCreateFence", "vkDestroyFence", "vkWaitForFences", "vkResetFences"
+}
 
+TARGET_STRUCTS = {
+    "VkPhysicalDeviceDynamicRenderingFeatures",
+    "VkImageCreateInfo",
+    "VkMemoryAllocateInfo",
+    "VkPipelineShaderStageCreateInfo",
+    "VkVertexInputBindingDescription",
+    "VkVertexInputAttributeDescription",
+    "VkPipelineVertexInputStateCreateInfo",
+    "VkPipelineInputAssemblyStateCreateInfo",
+    "VkPipelineViewportStateCreateInfo",
+    "VkPipelineRasterizationStateCreateInfo",
+    "VkPipelineMultisampleStateCreateInfo",
+    "VkPipelineDepthStencilStateCreateInfo",
+    "VkPipelineColorBlendAttachmentState",
+    "VkPipelineColorBlendStateCreateInfo",
+    "VkPipelineDynamicStateCreateInfo",
+    "VkGraphicsPipelineCreateInfo",
+    "VkPipelineRenderingCreateInfo",
+    "VkComputePipelineCreateInfo",
+    "VkSemaphoreCreateInfo",
+    "VkFenceCreateInfo",
+    "VkCommandBufferBeginInfo",
+    "VkMemoryBarrier",
+    "VkImageMemoryBarrier",
+    "VkRenderingAttachmentInfo",
+    "VkRenderingInfo",
+    "VkSubmitInfo",
+    "VkPresentInfoKHR"
+}
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pColorAttachments[0].sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
+def generate_lua_ffi_cdef(xml_path):
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
 
+    ffi_declarations = []
+    seen_funcs = set()
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pDepthAttachment->sType must be VK_STRUCTURE_TYPE_RE
-NDERING_ATTACHMENT_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulk
-an.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
+    # 0. Grab API Constants (C Macros like VK_MAX_MEMORY_TYPES)
+    api_constants = {}
+    for enums_node in root.findall('.//enums[@name="API Constants"]'):
+        for enum_tag in enums_node.findall('enum'):
+            name = enum_tag.get('name')
+            value = enum_tag.get('value')
+            if name and value:
+                # Strip out C-specific suffixes like 'U' or 'ULL' (e.g. 32U -> 32)
+                api_constants[name] = value.replace('U', '').replace('L', '')
 
+    # ========================================================
+    # [THE PATCH] 0.5 Grab the actual Enum Values!
+    # ========================================================
+    ffi_declarations.append("\n// --- Enum Values ---")
+    ffi_declarations.append("enum {")
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdDraw(): The VkPipeline 0x170000000017 statically uses descriptor set 0, but because a descriptor was never bound, the pipeline layouts are not compatible.
-If using a descriptor, make sure to call one of vkCmdBindDescriptorSets, vkCmdPushDescriptorSet, vkCmdSetDescriptorBufferOffset, etc for VK_PIPELINE_BIND_POINT_GRAPHICS.
-The Vulkan spec states: If a a bound shader was created as a VkShaderEXT without the VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT flag or as part of a pipeline without the VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT flag, and that shader statically uses a set n, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the V
-kPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://docs.vulkan.org
-/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-08600)
+    # Find all enum groups that are actual enums (not bitmasks)
+    for enums_node in root.findall('.//enums[@type="enum"]'):
+        for enum_tag in enums_node.findall('enum'):
+            name = enum_tag.get('name')
+            value = enum_tag.get('value')
 
+            # Some Vulkan enums use aliases instead of values, so we check for both
+            if not value:
+                value = enum_tag.get('alias')
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdPipelineBarrier(): pImageMemoryBarriers[0].srcAccessMask (VK_ACCESS_2_COLOR_ATTACHMENT
-_WRITE_BIT) is not supported by stage mask (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT).
-The Vulkan spec states: For each element of pImageMemoryBarriers, if its srcQueueFamilyIndex and dst
-QueueFamilyIndex members are equal, or if its srcQueueFamilyIndex is the queue family index that was used to create the command pool that commandBuffer was allocated from, then its srcAccessMask member must only contain access flags that are supported by one or more of the pipeline stages in srcStageMask, as specified in the table of supported access types (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-vkCmdPipelineBarrier-pImageMemoryBarriers-02819)
+            if name and value:
+                ffi_declarations.append(f"    {name} = {value},")
 
+    ffi_declarations.append("};")
+    # 1. Grab Handles
+    ffi_declarations.append("// --- Handles ---")
+    for handle in root.findall('.//types/type[@category="handle"]'):
+        name_elem = handle.find('name')
+        if name_elem is not None:
+            handle_name = name_elem.text
+            ffi_declarations.append(f"typedef struct {handle_name}_T* {handle_name};")
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->sType must be VK_STRUCTURE_TYPE_RENDERING_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_INFO (https://docs.vulkan.org/spec
-/latest/chapters/renderpass.html#VUID-VkRenderingInfo-sType-sType)
+    # 1.5 Grab Enums and Bitmasks (Spoofed as ints/uints for LuaJIT memory layout)
+    ffi_declarations.append("\n// --- Enums & Bitmasks ---")
+    seen_types = set()
+    for type_tag in root.findall('.//types/type'):
+        category = type_tag.get('category')
 
+        name = type_tag.get('name') or (type_tag.find('name').text if type_tag.find('name') is not None else None)
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pColorAttachments[0].sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
+        if not name or name in seen_types:
+            continue
 
+        if category == 'enum':
+            ffi_declarations.append(f"typedef int {name};")
+            seen_types.add(name)
+        elif category == 'bitmask':
+            base_type_elem = type_tag.find('type')
+            base_type = base_type_elem.text if base_type_elem is not None else "uint32_t"
+            ffi_declarations.append(f"typedef {base_type} {name};")
+            seen_types.add(name)
+        elif category == 'basetype':
+            base_type_elem = type_tag.find('type')
+            if base_type_elem is not None and name:
+                ffi_declarations.append(f"typedef {base_type_elem.text} {name};")
+                seen_types.add(name)
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pDepthAttachment->sType must be VK_STRUCTURE_TYPE_RE
-NDERING_ATTACHMENT_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulk
-an.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
+    # Dictionary to map struct/union names to their XML element
+    all_structs_xml = {}
+    for s in root.findall('.//types/type'):
+        if s.get('category') in ('struct', 'union'):
+            all_structs_xml[s.get('name')] = s
 
+    # 2. Figure out which structs our TARGET_FUNCTIONS need directly
+    required_types = set()
+    for command in root.findall('.//commands/command'):
+        # FIX: We have to look inside <proto> to find the <name>!
+        proto = command.find('proto')
+        if proto is not None:
+            name_elem = proto.find('name')
+            if name_elem is not None and name_elem.text in TARGET_FUNCTIONS:
+                for param in command.findall('param'):
+                    type_elem = param.find('type')
+                    if type_elem is not None:
+                        required_types.add(type_elem.text)
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdDraw(): The VkPipeline 0x170000000017 statically uses descriptor set 0, but because a
-descriptor was never bound, the pipeline layouts are not compatible.
-If using a descriptor, make sure to call one of vkCmdBindDescriptorSets, vkCmdPushDescriptorSet, vkC
-mdSetDescriptorBufferOffset, etc for VK_PIPELINE_BIND_POINT_GRAPHICS.
-The Vulkan spec states: If a a bound shader was created as a VkShaderEXT without the VK_SHADER_CREAT
-E_DESCRIPTOR_HEAP_BIT_EXT flag or as part of a pipeline without the VK_PIPELINE_CREATE_2_DESCRIPTOR_
-HEAP_BIT_EXT flag, and that shader statically uses a set n, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-08600)
+    # --- SURGICAL PATCH: FORCE-FEED EXPLICIT STRUCTS ---
+    for explicit_struct in TARGET_STRUCTS:
+        required_types.add(explicit_struct)
 
+    # 3. Recursively find nested structs (Dependencies)
+    resolved_structs = set()
+    struct_dependencies = {}
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdPipelineBarrier(): pImageMemoryBarriers[0].srcAccessMask (VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT) is not supported by stage mask (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT).
-The Vulkan spec states: For each element of pImageMemoryBarriers, if its srcQueueFamilyIndex and dstQueueFamilyIndex members are equal, or if its srcQueueFamilyIndex is the queue family index that was used to create the command pool that commandBuffer was allocated from, then its srcAccessMask member must only contain access flags that are supported by one or more of the pipeline stages in srcStag
-eMask, as specified in the table of supported access types (https://docs.vulkan.org/spec/latest/chap
-ters/synchronization.html#VUID-vkCmdPipelineBarrier-pImageMemoryBarriers-02819)
+    def resolve_dependencies(type_name):
+        if type_name in resolved_structs or type_name not in all_structs_xml:
+            return
 
+        struct_xml = all_structs_xml[type_name]
+        resolved_structs.add(type_name)
+        struct_dependencies[type_name] = set()
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkQueueSubmit(): pSubmits[0].pWaitSemaphores[0] queue (VkQueue 0x1d943f9d488) is waiting on semaphore (VkSemaphore 0x210000000021) that has no way to be signaled.
-The Vulkan spec states: All elements of the pWaitSemaphores member of all elements of pSubmits creat
-ed with a VkSemaphoreType of VK_SEMAPHORE_TYPE_BINARY must reference a semaphore signal operation that has been submitted for execution and any semaphore signal operations on which it depends must have also been submitted for execution (https://docs.vulkan.org/spec/latest/chapters/cmdbuffers.html#VUID-vkQueueSubmit-pWaitSemaphores-03238)
+        for member in struct_xml.findall('member'):
+            member_type = member.find('type')
+            if member_type is not None and member_type.text in all_structs_xml:
+                struct_dependencies[type_name].add(member_type.text)
+                resolve_dependencies(member_type.text) # Recurse!
 
+    for t in list(required_types):
+        resolve_dependencies(t)
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkResetCommandPool(): (VkCommandBuffer 0x1d95964ac18) is in use.
-The Vulkan spec states: All VkCommandBuffer objects allocated from commandPool must not be in the pending state (https://docs.vulkan.org/spec/latest/chapters/cmdbuffers.html#VUID-vkResetCommandPool-commandPool-00040)
+    # 4. Topological Sort (Print base structs before complex structs)
+    ffi_declarations.append("\n// --- Structs (Auto-Sorted) ---")
+    emitted = set()
 
+    def emit_struct(struct_name):
+        if struct_name in emitted:
+            return
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkAcquireNextImageKHR(): Semaphore must not have any pending operations.
-The Vulkan spec states: If semaphore is not VK_NULL_HANDLE, it must not have any uncompleted signal or wait operations pending (https://docs.vulkan.org/spec/latest/chapters/VK_KHR_surface/wsi.html#VUID-vkAcquireNextImageKHR-semaphore-01779)
+        # Make sure all dependencies are printed first
+        for dep in struct_dependencies.get(struct_name, []):
+            emit_struct(dep)
 
+        struct_xml = all_structs_xml[struct_name]
+        members = []
+        seen_members = set() # Squash duplicate XML artifacts
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkResetFences(): pFences[0] (VkFence 0x1d000000001d) is in use.
-The Vulkan spec states: Each element of pFences must not be currently associated with any queue command that has not yet completed execution on that queue (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-vkResetFences-pFences-01123)
+        for member in struct_xml.findall('member'):
+            for comment in member.findall('comment'):
+                member.remove(comment)
 
+            member_name = member.find('name').text if member.find('name') is not None else ""
+            if member_name in seen_members:
+                continue
+            seen_members.add(member_name)
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->sType must be VK_STRUCTURE_TYPE_RENDERING_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_INFO (https://docs.vulkan.org/spec
-/latest/chapters/renderpass.html#VUID-VkRenderingInfo-sType-sType)
+            member_text = "".join(member.itertext()).strip()
 
+            # SURGICAL PATCH: Swap out C macros for their raw integer values
+            for macro_name, macro_value in api_constants.items():
+                if macro_name in member_text:
+                    member_text = member_text.replace(macro_name, macro_value)
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pColorAttachments[0].sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
+            members.append(f"    {' '.join(member_text.split())};")
 
+        # Check if this is a struct or a union to emit the correct C syntax
+        category = struct_xml.get('category', 'struct')
+        ffi_declarations.append(f"typedef {category} {struct_name} {{\n" + "\n".join(members) + f"\n}} {struct_name};")
+        emitted.add(struct_name)
+
+    for s in resolved_structs:
+        emit_struct(s)
+
+    # 5. Grab Functions
+    ffi_declarations.append("\n// --- Functions & PFN Typedefs ---")
+    for command in root.findall('.//commands/command'):
+        if command.get('alias'):
+            continue
+
+        proto = command.find('proto')
+        if proto is None:
+            continue
+
+        name_elem = proto.find('name')
+        if name_elem is None or name_elem.text not in TARGET_FUNCTIONS:
+            continue
+
+        if name_elem.text in seen_funcs:
+            continue
+        seen_funcs.add(name_elem.text)
+
+        # [THE PATCH] Extract the raw return type (e.g., 'void', 'VkResult') for the PFN typedef
+        return_type_elem = proto.find('type')
+        return_type = return_type_elem.text if return_type_elem is not None else "void"
+
+        signature = "".join(proto.itertext()).strip()
+        params = []
+        for param in command.findall('param'):
+            for comment in param.findall('comment'):
+                param.remove(comment)
+
+            param_text = "".join(param.itertext()).strip()
+            param_text = " ".join(param_text.split())
+
+            # SURGICAL PATCH: Prevent duplicate parameters in the signature
+            if param_text not in params:
+                params.append(param_text)
+
+        param_str = ", ".join(params) if params else "void"
+
+        # Print the standard function declaration
+        ffi_declarations.append(f"{signature}({param_str});")
+
+        # Print the PFN typedef so ffi.cast works perfectly!
+        ffi_declarations.append(f"typedef {return_type} (*PFN_{name_elem.text})({param_str});")
+
+    return ffi_declarations
+
+if __name__ == "__main__":
+    output_filename = "vulkan_headers.lua"
+
+    with open(output_filename, "w") as f:
+        # --- LUA MODULE HEADER ---
+        f.write("local ffi = require('ffi')\n")
+        f.write("ffi.cdef[[\n")
+
+        # Base types needed to keep LuaJIT happy
+        f.write("// --- Base Types ---\n")
+        # f.write("typedef uint32_t VkFlags;\n")
+        # f.write("typedef uint64_t VkFlags64;\n")
+        # f.write("typedef uint64_t VkDeviceSize;\n")
+        # f.write("typedef uint32_t VkBool32;\n")
+        # f.write("typedef uint64_t VkDeviceAddress;\n")
+
+        f.write("typedef void* PFN_vkVoidFunction;\n")
+        f.write("typedef void* PFN_vkAllocationFunction;\n")
+        f.write("typedef void* PFN_vkReallocationFunction;\n")
+        f.write("typedef void* PFN_vkFreeFunction;\n")
+        f.write("typedef void* PFN_vkInternalAllocationNotification;\n")
+        f.write("typedef void* PFN_vkInternalFreeNotification;\n\n")
+
+        # Generate and write the parsed declarations
+        declarations = generate_lua_ffi_cdef("vk.xml")
+        for decl in declarations:
+            f.write(decl + "\n")
+
+        # --- LUA MODULE FOOTER ---
+        f.write("]]\n")
+        f.write("return true\n")
+
+    print(f"[PARSE] Successfully generated {output_filename}!")
+
+AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua
+$
