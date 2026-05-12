@@ -12,7 +12,7 @@ $ ./boot.exe
 [LUA] Window Surface Linked from Main Thread!
 [LUA] Hardware GPU Selected!
 [LUA] Logical Device Created!
-[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x0236fd60c2d8
+[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x0105e8e089f8
 [MEMORY] ReBAR Supported! Streaming directly to VRAM.
 [MEMORY] Allocated & Mapped VRAM Buffer: MASTER_GPU_BLOCK (256.00 MB)
 [SWAPCHAIN] Building the display chain...
@@ -26,5 +26,5 @@ $ ./boot.exe
 [FACTORY] Forging Triple-Buffered Command Matrix...
 [RENDERER] Forging Synchronization Primitives...
 
-[LUA FATAL ERROR] main.lua:55: FATAL: FIBER CRASH -> .\renderer.lua:134: attempt to index global 'vk' (a nil value)
+[LUA FATAL ERROR] main.lua:55: FATAL: FIBER CRASH -> .\renderer.lua:134: missing declaration for symbol 'vkGetDeviceProcAddr'
 [LUA-OS-THREAD] VM Destroyed.
