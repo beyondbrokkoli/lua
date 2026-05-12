@@ -1,3 +1,4 @@
+AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua
 $ ./boot.exe
 [C-CORE] Booting Headless Worker...
 [LUA-OS-THREAD] Booting Lua VM...
@@ -11,7 +12,7 @@ $ ./boot.exe
 [LUA] Window Surface Linked from Main Thread!
 [LUA] Hardware GPU Selected!
 [LUA] Logical Device Created!
-[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x024ce6d26128
+[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x0279f76bb798
 [MEMORY] ReBAR Supported! Streaming directly to VRAM.
 [MEMORY] Allocated & Mapped VRAM Buffer: MASTER_GPU_BLOCK (256.00 MB)
 [SWAPCHAIN] Building the display chain...
@@ -25,7 +26,7 @@ $ ./boot.exe
 [FACTORY] Forging Triple-Buffered Command Matrix...
 [RENDERER] Forging Synchronization Primitives...
 
-[LUA FATAL ERROR] main.lua:55: FATAL: FIBER CRASH -> .\renderer.lua:109: too many initializers for 'struct VkRenderingAttachmentInfoKHR [0]'
+[LUA FATAL ERROR] main.lua:55: FATAL: FIBER CRASH -> .\renderer.lua:89: 'struct VkRenderingAttachmentInfoKHR' has no member named 'sType'
 [LUA-OS-THREAD] VM Destroyed.
 
 
