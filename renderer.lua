@@ -1,6 +1,14 @@
 local ffi = require("ffi")
 local bit = require("bit")
-
+-- ============================================================================
+-- ALIAS BRIDGE: Map KHR extension names to Core 1.3 definitions from parse.py
+-- ============================================================================
+ffi.cdef[[
+    typedef VkRenderingAttachmentInfo VkRenderingAttachmentInfoKHR;
+    typedef VkRenderingInfo VkRenderingInfoKHR;
+    typedef PFN_vkCmdBeginRendering PFN_vkCmdBeginRenderingKHR;
+    typedef PFN_vkCmdEndRendering PFN_vkCmdEndRenderingKHR;
+]]
 local Renderer = {}
 
 function Renderer.InitSync(vk, device, frames_in_flight)
@@ -30,7 +38,7 @@ end
 
 function Renderer.AllocateFrameState(vk, device, width, height)
     local state = {}
-    
+
     state.pImageIndex = ffi.new("uint32_t[1]")
     state.cmdBeginInfo = ffi.new("VkCommandBufferBeginInfo", { sType = 42 })
 
