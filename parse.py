@@ -40,7 +40,7 @@ TARGET_FUNCTIONS = {
     "vkCmdBeginRendering", "vkCmdDraw", "vkCmdEndRendering",
 
     # Swapchain & Sync
-    "vkCreateSemaphore", "vkDestroySemaphore",
+    "vkCreateSemaphore", "vkDestroySemaphore", "vkRenderingAttachementInfoKHR",
     "vkAcquireNextImageKHR", "vkCreateSwapchainKHR", "vkDestroySwapchainKHR", "vkQueuePresentKHR",
     "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", "vkGetSwapchainImagesKHR", "vkCreateImageView",
     "vkDestroyImageView", "vkDestroySurfaceKHR",
