@@ -116,7 +116,7 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     state.viewport = ffi.new("VkViewport[1]", {{ 0.0, 0.0, width, height, 0.0, 1.0 }})
     state.scissor = ffi.new("VkRect2D[1]", {{ {0, 0}, {width, height} }})
     state.offsets = ffi.new("VkDeviceSize[1]", {0})
-    
+
     -- Submit & Present State
     state.submitInfo = ffi.new("VkSubmitInfo", { sType = 4, waitSemaphoreCount = 1, commandBufferCount = 1, signalSemaphoreCount = 1 })
     state.waitStages = ffi.new("int32_t[1]", { 256 }) -- COLOR_ATTACHMENT_OUTPUT
@@ -129,7 +129,7 @@ function Renderer.AllocateFrameState(vk, device, width, height)
         waitSemaphoreCount = 1,
         swapchainCount = 1
     })
-    
+
     -- API Function pointers for Core 1.3 Dynamic Rendering (Stripped KHR)
     state.vkCmdBeginRendering = ffi.cast("PFN_vkCmdBeginRendering", vk.vkGetDeviceProcAddr(device, "vkCmdBeginRendering"))
     state.vkCmdEndRendering = ffi.cast("PFN_vkCmdEndRendering", vk.vkGetDeviceProcAddr(device, "vkCmdEndRendering"))
@@ -210,14 +210,14 @@ function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current
     f_state.submitInfo.pWaitSemaphores = ffi.new("VkSemaphore[1]", {imageAvailable})
     f_state.submitInfo.pCommandBuffers = f_state.cmdPtr
     f_state.submitInfo.pSignalSemaphores = ffi.new("VkSemaphore[1]", {renderFinished})
-    
+
     vk.vkQueueSubmit(queue, 1, ffi.new("VkSubmitInfo[1]", {f_state.submitInfo}), inFlightFence)
 
     -- 4. Present
     f_state.presentInfo.pWaitSemaphores = ffi.new("VkSemaphore[1]", {renderFinished})
     f_state.presentInfo.pSwapchains = ffi.new("VkSwapchainKHR[1]", {swapchain.handle})
     f_state.presentInfo.pImageIndices = f_state.pImageIndex
-    
+
     vk.vkQueuePresentKHR(queue, f_state.presentInfo)
 
     return true
@@ -227,7 +227,7 @@ function Renderer.Destroy(vk, device, sync, frames_in_flight)
     print("[TEARDOWN] Dismantling Renderer Sync Objects...")
     -- User explicitly requested vkDeviceWaitIdle factor-in
     vk.vkDeviceWaitIdle(device)
-    
+
     if not sync then return end
     for i = 0, frames_in_flight - 1 do
         vk.vkDestroySemaphore(device, sync.imageAvailable[i], nil)

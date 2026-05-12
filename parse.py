@@ -29,6 +29,13 @@ TARGET_FUNCTIONS = {
     "vkCmdBindPipeline", "vkCmdBindDescriptorSets", "vkCmdPushConstants",
     "vkCmdDispatch", "vkCmdPipelineBarrier",
 
+    # Draw Operations
+    "vkCmdSetViewport",
+    "vkCmdSetScissor",
+    "vkCmdBindVertexBuffers",
+    "vkCmdDrawIndirect",
+    "vkCmdFillBuffer",
+
     # Graphics/Rendering specific
     "vkCmdBeginRendering", "vkCmdDraw", "vkCmdEndRendering",
 
@@ -227,7 +234,7 @@ def generate_lua_ffi_cdef(xml_path):
         emit_struct(s)
 
     # 5. Grab Functions
-    ffi_declarations.append("\n// --- Functions ---")
+    ffi_declarations.append("\n// --- Functions & PFN Typedefs ---")
     for command in root.findall('.//commands/command'):
         if command.get('alias'):
             continue
@@ -244,6 +251,10 @@ def generate_lua_ffi_cdef(xml_path):
             continue
         seen_funcs.add(name_elem.text)
 
+        # [THE PATCH] Extract the raw return type (e.g., 'void', 'VkResult') for the PFN typedef
+        return_type_elem = proto.find('type')
+        return_type = return_type_elem.text if return_type_elem is not None else "void"
+
         signature = "".join(proto.itertext()).strip()
         params = []
         for param in command.findall('param'):
@@ -258,7 +269,12 @@ def generate_lua_ffi_cdef(xml_path):
                 params.append(param_text)
 
         param_str = ", ".join(params) if params else "void"
+
+        # Print the standard function declaration
         ffi_declarations.append(f"{signature}({param_str});")
+
+        # Print the PFN typedef so ffi.cast works perfectly!
+        ffi_declarations.append(f"typedef {return_type} (*PFN_{name_elem.text})({param_str});")
 
     return ffi_declarations
 
