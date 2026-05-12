@@ -189,7 +189,7 @@ for _, src in ipairs(order) do
             minified_content = minify_lua(content)
         end
 
---        print("@@@ FILE: " .. src .. " @@@\n" .. minified_content)
+        print("@@@ FILE: " .. src .. " @@@\n" .. minified_content)
         f:close()
     end
 end

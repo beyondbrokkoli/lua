@@ -51,13 +51,11 @@ function core.create_instance()
     instanceExtensions[exts_count] = "VK_EXT_debug_utils"
     instanceExtensions[exts_count + 1] = "VK_KHR_get_physical_device_properties2"
 
-    -- 2. Build the Application Info
     local appInfo = ffi.new("VkApplicationInfo", {
         sType = 0, -- VK_STRUCTURE_TYPE_APPLICATION_INFO
         pApplicationName = "VibeEngine Cooking Dish",
-        apiVersion = 4194304 -- VK_API_VERSION_1_0
+        apiVersion = 4206592 -- VK_MAKE_API_VERSION(0, 1, 3, 0)
     })
-
     -- 2.5 Define the Validation Layers
     local validationLayers = ffi.new("const char*[1]", {"VK_LAYER_KHRONOS_validation"})
 

@@ -133,7 +133,9 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     -- API Function pointers for Core 1.3 Dynamic Rendering (Stripped KHR)
     state.vkCmdBeginRendering = ffi.cast("PFN_vkCmdBeginRendering", vk.vkGetDeviceProcAddr(device, "vkCmdBeginRendering"))
     state.vkCmdEndRendering = ffi.cast("PFN_vkCmdEndRendering", vk.vkGetDeviceProcAddr(device, "vkCmdEndRendering"))
-    assert(state.vkCmdBeginRendering and state.vkCmdEndRendering, "FATAL: Core Dynamic Rendering Pointers Missing!")
+
+    assert(state.vkCmdBeginRendering ~= ffi.NULL and state.vkCmdEndRendering ~= ffi.NULL,
+           "FATAL: Core 1.3 Dynamic Rendering Pointers Returned NULL!")
 
     return state
 end
