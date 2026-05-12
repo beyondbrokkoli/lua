@@ -84,31 +84,34 @@ function Renderer.AllocateFrameState(width, height)
         dstAccessMask = 0
     })
 
-    -- Dynamic Rendering Attachments
-    state.colorAttachment = ffi.new("VkRenderingAttachmentInfoKHR", {
-        sType = 1000044000,
-        imageLayout = 2,
-        loadOp = 0, -- CLEAR
-        storeOp = 0, -- STORE
-        clearValue = { color = { float32 = {0.01, 0.01, 0.02, 1.0} } }
-    })
-    
-    state.depthAttachment = ffi.new("VkRenderingAttachmentInfoKHR", {
-        sType = 1000044000,
-        imageLayout = 252,
-        loadOp = 0, -- CLEAR
-        storeOp = 2, -- DONT_CARE
-        clearValue = { depthStencil = { depth = 0.0 } } -- Reverse-Z clear to 0
-    })
+    -- Dynamic Rendering Attachments (Explicit Pointer Assignment)
+    state.colorAttachment = ffi.new("VkRenderingAttachmentInfoKHR[1]")
+    state.colorAttachment[0].sType = 1000044000
+    state.colorAttachment[0].imageLayout = 2
+    state.colorAttachment[0].loadOp = 0 -- CLEAR
+    state.colorAttachment[0].storeOp = 0 -- STORE
+    state.colorAttachment[0].clearValue.color.float32[0] = 0.01
+    state.colorAttachment[0].clearValue.color.float32[1] = 0.01
+    state.colorAttachment[0].clearValue.color.float32[2] = 0.02
+    state.colorAttachment[0].clearValue.color.float32[3] = 1.0
 
-    state.renderInfo = ffi.new("VkRenderingInfoKHR", {
-        sType = 1000044001,
-        renderArea = { extent = { width = width, height = height } },
-        layerCount = 1,
-        colorAttachmentCount = 1,
-        pColorAttachments = ffi.new("VkRenderingAttachmentInfoKHR[1]", {state.colorAttachment}),
-        pDepthAttachment = ffi.new("VkRenderingAttachmentInfoKHR[1]", {state.depthAttachment})
-    })
+    state.depthAttachment = ffi.new("VkRenderingAttachmentInfoKHR[1]")
+    state.depthAttachment[0].sType = 1000044000
+    state.depthAttachment[0].imageLayout = 252
+    state.depthAttachment[0].loadOp = 0 -- CLEAR
+    state.depthAttachment[0].storeOp = 2 -- DONT_CARE
+    state.depthAttachment[0].clearValue.depthStencil.depth = 0.0
+
+    state.renderInfo = ffi.new("VkRenderingInfoKHR")
+    state.renderInfo.sType = 1000044001
+    state.renderInfo.renderArea.extent.width = width
+    state.renderInfo.renderArea.extent.height = height
+    state.renderInfo.layerCount = 1
+    state.renderInfo.colorAttachmentCount = 1
+    
+    -- Because we declared them as [1] arrays above, they gracefully decay into pointers here!
+    state.renderInfo.pColorAttachments = state.colorAttachment
+    state.renderInfo.pDepthAttachment = state.depthAttachment
 
     -- Pipeline State
     state.viewport = ffi.new("VkViewport[1]", {{ 0.0, 0.0, width, height, 0.0, 1.0 }})
