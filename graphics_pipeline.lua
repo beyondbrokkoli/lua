@@ -218,16 +218,16 @@ function GraphicsPipeline.Init(vk, core_state, width, height, pipelineLayout, co
     assert(vk.vkCreateGraphicsPipelines(device, nil, 1, pipelineInfo, nil, pPipeline) == 0)
 
     print("[GRAPHICS] Swarm Pipeline Successfully Compiled!")
-
     return {
         depthImage = depthImage,
         depthMemory = depthMemory,
         depthImageView = depthImageView,
         vertModule = pVertModule[0],
         fragModule = pFragModule[0],
-        pipeline = pPipeline[0]
-        -- Note: pipelineLayout is no longer stored here as it is owned by descriptors.lua
+        pipeline = pPipeline[0],
+        pipelineLayout = pipelineLayout -- FATAL SEGFAULT FIX
     }
+end
 end
 
 function GraphicsPipeline.Destroy(vk, core_state, gfx_state)

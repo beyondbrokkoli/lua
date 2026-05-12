@@ -1,11 +1,37 @@
 local ffi = require("ffi")
 local bit = require("bit")
 
-local Renderer = {}
+ffi.cdef[[
+    typedef struct VkRenderingAttachmentInfo_Core13 {
+        uint32_t sType;
+        const void* pNext;
+        VkImageView imageView;
+        uint32_t imageLayout;
+        uint32_t resolveMode;
+        VkImageView resolveImageView;
+        uint32_t resolveImageLayout;
+        uint32_t loadOp;
+        uint32_t storeOp;
+        VkClearValue clearValue;
+    } VkRenderingAttachmentInfo_Core13;
 
+    typedef struct VkRenderingInfo_Core13 {
+        uint32_t sType;
+        const void* pNext;
+        uint32_t flags;
+        VkRect2D renderArea;
+        uint32_t layerCount;
+        uint32_t viewMask;
+        uint32_t colorAttachmentCount;
+        const VkRenderingAttachmentInfo_Core13* pColorAttachments;
+        const VkRenderingAttachmentInfo_Core13* pDepthAttachment;
+        const VkRenderingAttachmentInfo_Core13* pStencilAttachment;
+    } VkRenderingInfo_Core13;
+]]
 -- ============================================================================
 -- INITIALIZATION
 -- ============================================================================
+local Renderer = {}
 
 function Renderer.InitSync(vk, device, frames_in_flight)
     print("[RENDERER] Forging Synchronization Primitives...")
@@ -84,32 +110,29 @@ function Renderer.AllocateFrameState(vk, device, width, height)
         dstAccessMask = 0
     })
 
-    -- Dynamic Rendering Attachments (Explicit Pointer Assignment - Core 1.3)
-    state.colorAttachment = ffi.new("VkRenderingAttachmentInfo[1]")
-    state.colorAttachment[0].sType = 1000044000
+    state.colorAttachment = ffi.new("VkRenderingAttachmentInfo_Core13[1]")
+    state.colorAttachment[0].sType = ffi.cast("uint32_t", 1000044000)
     state.colorAttachment[0].imageLayout = 2
-    state.colorAttachment[0].loadOp = 0 -- CLEAR
-    state.colorAttachment[0].storeOp = 0 -- STORE
+    state.colorAttachment[0].loadOp = 0
+    state.colorAttachment[0].storeOp = 0
     state.colorAttachment[0].clearValue.color.float32[0] = 0.01
     state.colorAttachment[0].clearValue.color.float32[1] = 0.01
     state.colorAttachment[0].clearValue.color.float32[2] = 0.02
     state.colorAttachment[0].clearValue.color.float32[3] = 1.0
 
-    state.depthAttachment = ffi.new("VkRenderingAttachmentInfo[1]")
-    state.depthAttachment[0].sType = 1000044000
+    state.depthAttachment = ffi.new("VkRenderingAttachmentInfo_Core13[1]")
+    state.depthAttachment[0].sType = ffi.cast("uint32_t", 1000044000)
     state.depthAttachment[0].imageLayout = 3
-    state.depthAttachment[0].loadOp = 0 -- CLEAR
-    state.depthAttachment[0].storeOp = 1 -- VK_ATTACHMENT_STORE_OP_DONT_CARE (Fixed Enum)
+    state.depthAttachment[0].loadOp = 0
+    state.depthAttachment[0].storeOp = 1
     state.depthAttachment[0].clearValue.depthStencil.depth = 0.0
 
-    -- Force pointer semantics across the C-boundary
-    state.renderInfo = ffi.new("VkRenderingInfo[1]")
-    state.renderInfo[0].sType = 1000044001
+    state.renderInfo = ffi.new("VkRenderingInfo_Core13[1]")
+    state.renderInfo[0].sType = ffi.cast("uint32_t", 1000044001)
     state.renderInfo[0].renderArea.extent.width = width
     state.renderInfo[0].renderArea.extent.height = height
     state.renderInfo[0].layerCount = 1
     state.renderInfo[0].colorAttachmentCount = 1
-
     state.renderInfo[0].pColorAttachments = state.colorAttachment
     state.renderInfo[0].pDepthAttachment = state.depthAttachment
 
@@ -182,23 +205,21 @@ function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current
     f_state.preBarriers[1].image = p_gfx.depthImage
     vk.vkCmdPipelineBarrier(cmd_buffer, 1, bit.bor(256, 1024), 0, 0, nil, 0, nil, 2, f_state.preBarriers)
 
-    -- Dynamic Rendering Begin (Write to our mutable backing array to bypass 'const' pointer restriction)
     f_state.colorAttachment[0].imageView = swapchain.imageViews[imgIndex]
     f_state.depthAttachment[0].imageView = p_gfx.depthImageView
-    f_state.vkCmdBeginRendering(cmd_buffer, f_state.renderInfo)
 
-    vk.vkCmdBindPipeline(cmd_buffer, 0, p_gfx.pipeline) -- GRAPHICS
+    -- Cast iron-clad struct to void* for the function pointer
+    f_state.vkCmdBeginRendering(cmd_buffer, ffi.cast("const void*", f_state.renderInfo))
+
+    vk.vkCmdBindPipeline(cmd_buffer, 0, p_gfx.pipeline)
     vk.vkCmdSetViewport(cmd_buffer, 0, 1, f_state.viewport)
     vk.vkCmdSetScissor(cmd_buffer, 0, 1, f_state.scissor)
-
-    -- Bind our single unified SSBO as a vertex buffer
     vk.vkCmdBindVertexBuffers(cmd_buffer, 0, 1, ffi.new("VkBuffer[1]", {unified_buffer}), f_state.offsets)
 
-    -- FORCE exactly 64 bytes. 33 = STAGE_ALL (Vertex | Compute)
+    -- p_gfx.pipelineLayout is now valid
     vk.vkCmdPushConstants(cmd_buffer, p_gfx.pipelineLayout, 33, 0, 64, pc_bytes)
 
     vk.vkCmdDraw(cmd_buffer, pc_bytes.particle_count, 1, 0, 0)
-
     f_state.vkCmdEndRendering(cmd_buffer)
 
     -- Post-Render Barrier (Transition to Present)
