@@ -99,18 +99,19 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     state.depthAttachment[0].sType = 1000044000
     state.depthAttachment[0].imageLayout = 3
     state.depthAttachment[0].loadOp = 0 -- CLEAR
-    state.depthAttachment[0].storeOp = 2 -- DONT_CARE
+    state.depthAttachment[0].storeOp = 1 -- VK_ATTACHMENT_STORE_OP_DONT_CARE (Fixed Enum)
     state.depthAttachment[0].clearValue.depthStencil.depth = 0.0
 
-    state.renderInfo = ffi.new("VkRenderingInfo")
-    state.renderInfo.sType = 1000044001
-    state.renderInfo.renderArea.extent.width = width
-    state.renderInfo.renderArea.extent.height = height
-    state.renderInfo.layerCount = 1
-    state.renderInfo.colorAttachmentCount = 1
+    -- Force pointer semantics across the C-boundary
+    state.renderInfo = ffi.new("VkRenderingInfo[1]")
+    state.renderInfo[0].sType = 1000044001
+    state.renderInfo[0].renderArea.extent.width = width
+    state.renderInfo[0].renderArea.extent.height = height
+    state.renderInfo[0].layerCount = 1
+    state.renderInfo[0].colorAttachmentCount = 1
 
-    state.renderInfo.pColorAttachments = state.colorAttachment
-    state.renderInfo.pDepthAttachment = state.depthAttachment
+    state.renderInfo[0].pColorAttachments = state.colorAttachment
+    state.renderInfo[0].pDepthAttachment = state.depthAttachment
 
     -- Pipeline State
     state.viewport = ffi.new("VkViewport[1]", {{ 0.0, 0.0, width, height, 0.0, 1.0 }})
@@ -165,8 +166,9 @@ function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current
     vk.vkCmdBindPipeline(cmd_buffer, 1, p_compute.pipeline) -- 1 = VK_PIPELINE_BIND_POINT_COMPUTE
     vk.vkCmdBindDescriptorSets(cmd_buffer, 1, p_compute.pipelineLayout, 0, 1, ffi.new("VkDescriptorSet[1]", {desc_state.set0}), 0, nil)
 
-    -- FORCE exactly 64 bytes. 33 = STAGE_ALL (Vertex | Compute)
-    vk.vkCmdPushConstants(cmd_buffer, p_compute.pipelineLayout, 33, 0, 64, pc_bytes)
+    -- 33 = STAGE_ALL (Vertex | Compute)
+    -- FORCE exactly 64 bytes to prevent a Vulkan Validation Crash!
+    vk.vkCmdPushConstants(cmd_buffer, desc_state.pipelineLayout, 33, 0, 64, pc_bytes)
     vk.vkCmdDispatch(cmd_buffer, 1024, 1, 1)
 
     -- Barrier: Compute Write -> Graphics Read

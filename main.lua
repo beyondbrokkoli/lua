@@ -134,7 +134,7 @@ local function command_glfw_fiber()
     local device = vk_state.device
 
     local UNIVERSE_SIZE = 256 * 1024 * 1024
-    local usage_flags = bit.bor(32, 256)
+    local usage_flags = bit.bor(32, 128, 256) -- Added 128 (VERTEX_BUFFER_BIT)
     memory.CreateHostVisibleBuffer("MASTER_GPU_BLOCK", "uint8_t", UNIVERSE_SIZE, usage_flags, vk_state)
 
     local pWidth = ffi.new("int[1]")
