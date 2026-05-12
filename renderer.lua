@@ -36,11 +36,11 @@ end
 -- ZERO GC MANDATE: Pre-allocate all frame structs here.
 function Renderer.AllocateFrameState(width, height)
     local state = {}
-    
+
     -- Execution State
     state.pImageIndex = ffi.new("uint32_t[1]")
     state.cmdBeginInfo = ffi.new("VkCommandBufferBeginInfo", { sType = 42 })
-    
+
     -- Compute Memory Barrier (Compute Write -> Graphics Read)
     state.computeBarrier = ffi.new("VkMemoryBarrier", {
         sType = 46,
@@ -84,8 +84,8 @@ function Renderer.AllocateFrameState(width, height)
         dstAccessMask = 0
     })
 
-    -- Dynamic Rendering Attachments (Explicit Pointer Assignment)
-    state.colorAttachment = ffi.new("VkRenderingAttachmentInfoKHR[1]")
+    -- Dynamic Rendering Attachments (Explicit Pointer Assignment - Core 1.3)
+    state.colorAttachment = ffi.new("VkRenderingAttachmentInfo[1]")
     state.colorAttachment[0].sType = 1000044000
     state.colorAttachment[0].imageLayout = 2
     state.colorAttachment[0].loadOp = 0 -- CLEAR
@@ -95,21 +95,20 @@ function Renderer.AllocateFrameState(width, height)
     state.colorAttachment[0].clearValue.color.float32[2] = 0.02
     state.colorAttachment[0].clearValue.color.float32[3] = 1.0
 
-    state.depthAttachment = ffi.new("VkRenderingAttachmentInfoKHR[1]")
+    state.depthAttachment = ffi.new("VkRenderingAttachmentInfo[1]")
     state.depthAttachment[0].sType = 1000044000
     state.depthAttachment[0].imageLayout = 252
     state.depthAttachment[0].loadOp = 0 -- CLEAR
     state.depthAttachment[0].storeOp = 2 -- DONT_CARE
     state.depthAttachment[0].clearValue.depthStencil.depth = 0.0
 
-    state.renderInfo = ffi.new("VkRenderingInfoKHR")
+    state.renderInfo = ffi.new("VkRenderingInfo")
     state.renderInfo.sType = 1000044001
     state.renderInfo.renderArea.extent.width = width
     state.renderInfo.renderArea.extent.height = height
     state.renderInfo.layerCount = 1
     state.renderInfo.colorAttachmentCount = 1
     
-    -- Because we declared them as [1] arrays above, they gracefully decay into pointers here!
     state.renderInfo.pColorAttachments = state.colorAttachment
     state.renderInfo.pDepthAttachment = state.depthAttachment
 
@@ -124,16 +123,17 @@ function Renderer.AllocateFrameState(width, height)
     state.submitInfo.pWaitDstStageMask = state.waitStages
     state.cmdPtr = ffi.new("VkCommandBuffer[1]")
 
+    -- Swapchain Present must remain KHR, as it is strictly an extension
     state.presentInfo = ffi.new("VkPresentInfoKHR", {
         sType = 1000001001,
         waitSemaphoreCount = 1,
         swapchainCount = 1
     })
     
-    -- API Function pointers for Extensions (Dynamic Rendering)
-    state.vkCmdBeginRendering = ffi.cast("PFN_vkCmdBeginRenderingKHR", vk.vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR"))
-    state.vkCmdEndRendering = ffi.cast("PFN_vkCmdEndRenderingKHR", vk.vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR"))
-    assert(state.vkCmdBeginRendering and state.vkCmdEndRendering, "FATAL: Dynamic Rendering Extension Pointers Missing!")
+    -- API Function pointers for Core 1.3 Dynamic Rendering (Stripped KHR)
+    state.vkCmdBeginRendering = ffi.cast("PFN_vkCmdBeginRendering", vk.vkGetDeviceProcAddr(device, "vkCmdBeginRendering"))
+    state.vkCmdEndRendering = ffi.cast("PFN_vkCmdEndRendering", vk.vkGetDeviceProcAddr(device, "vkCmdEndRendering"))
+    assert(state.vkCmdBeginRendering and state.vkCmdEndRendering, "FATAL: Core Dynamic Rendering Pointers Missing!")
 
     return state
 end
