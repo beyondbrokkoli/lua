@@ -123,7 +123,8 @@ function Renderer.AllocateFrameState(vk, device, width, height)
         signalSemaphoreCount = 1
     })
 
-    state.waitStages = ffi.new("int32_t[1]", { 256 })
+    -- FIXED: 1024 = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+    state.waitStages = ffi.new("int32_t[1]", { 1024 })
     state.submitInfo.pWaitDstStageMask = state.waitStages
     state.cmdPtr = ffi.new("VkCommandBuffer[1]")
 
@@ -146,10 +147,20 @@ function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current
     local imageAvailable = sync.imageAvailable[current_frame]
     local renderFinished = sync.renderFinished[current_frame]
 
-    vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {inFlightFence}), 1, 0xFFFFFFFFFFFFFFFF)
+    -- IRON-CLAD 64-BIT MAX: Bypasses Lua float precision loss
+    local TIMEOUT_MAX = ffi.cast("uint64_t", -1)
 
-    local res = vk.vkAcquireNextImageKHR(device, swapchain.handle, 0xFFFFFFFFFFFFFFFF, imageAvailable, nil, f_state.pImageIndex)
-    if res == 1000001004 then return false end
+    -- GPU Lockstep: Wait for previous frame execution to finish
+    vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {inFlightFence}), 1, TIMEOUT_MAX)
+
+    -- Acquire Image
+    local res = vk.vkAcquireNextImageKHR(device, swapchain.handle, TIMEOUT_MAX, imageAvailable, nil, f_state.pImageIndex)
+
+    -- Abort if the swapchain is dead (-1000001004) or completely unready
+    -- 0 = VK_SUCCESS, 1000001004 = VK_SUBOPTIMAL_KHR
+    if res ~= 0 and res ~= 1000001004 then
+        return false
+    end
 
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {inFlightFence}))
     vk.vkResetCommandBuffer(cmd_buffer, 0)
@@ -174,20 +185,20 @@ function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current
     -- === DYNAMIC RENDERING GRAPHICS PASS ===
     f_state.colorAttachment[0].imageView = swapchain.imageViews[imgIndex]
     f_state.depthAttachment[0].imageView = p_gfx.depthImageView
-    
+
     f_state.vkCmdBeginRendering(cmd_buffer, f_state.renderInfo)
 
     vk.vkCmdBindPipeline(cmd_buffer, 0, p_gfx.pipeline)
-    
+
     -- FIXED: Missing Descriptor Bind for the Graphics Pipeline
     vk.vkCmdBindDescriptorSets(cmd_buffer, 0, p_gfx.pipelineLayout, 0, 1, ffi.new("VkDescriptorSet[1]", {desc_state.set0}), 0, nil)
 
     vk.vkCmdSetViewport(cmd_buffer, 0, 1, f_state.viewport)
     vk.vkCmdSetScissor(cmd_buffer, 0, 1, f_state.scissor)
-    
+
     vk.vkCmdBindVertexBuffers(cmd_buffer, 0, 1, ffi.new("VkBuffer[1]", {unified_buffer}), f_state.offsets)
     vk.vkCmdPushConstants(cmd_buffer, p_gfx.pipelineLayout, 33, 0, 64, pc_bytes)
-    
+
     vk.vkCmdDraw(cmd_buffer, pc_bytes.particle_count, 1, 0, 0)
 
     f_state.vkCmdEndRendering(cmd_buffer)
