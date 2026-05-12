@@ -21,7 +21,7 @@ TARGET_FUNCTIONS = {
 
     # Depth Buffer
     "vkCreateImage", "vkGetImageMemoryRequirements", "vkBindImageMemory",
-    "vkDestroyImage",                # <--- ADD THIS
+    "vkDestroyImage",
 
     # Command Buffers
     "vkCreateCommandPool", "vkDestroyCommandPool", "vkResetCommandPool", "vkAllocateCommandBuffers",
@@ -36,7 +36,8 @@ TARGET_FUNCTIONS = {
     "vkCreateSemaphore", "vkDestroySemaphore",
     "vkAcquireNextImageKHR", "vkCreateSwapchainKHR", "vkDestroySwapchainKHR", "vkQueuePresentKHR",
     "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", "vkGetSwapchainImagesKHR", "vkCreateImageView",
-    "vkDestroyImageView", "vkDestroySurfaceKHR" # <--- ADD THIS
+    "vkDestroyImageView", "vkDestroySurfaceKHR",
+    "vkCreateFence", "vkDestroyFence", "vkWaitForFences", "vkResetFences"
 }
 
 TARGET_STRUCTS = {
@@ -57,7 +58,16 @@ TARGET_STRUCTS = {
     "VkPipelineDynamicStateCreateInfo",
     "VkGraphicsPipelineCreateInfo",
     "VkPipelineRenderingCreateInfo",
-    "VkComputePipelineCreateInfo"
+    "VkComputePipelineCreateInfo",
+    "VkSemaphoreCreateInfo",
+    "VkFenceCreateInfo",
+    "VkCommandBufferBeginInfo",
+    "VkMemoryBarrier",
+    "VkImageMemoryBarrier",
+    "VkRenderingAttachmentInfoKHR",
+    "VkRenderingInfoKHR",
+    "VkSubmitInfo",
+    "VkPresentInfoKHR"
 }
 
 def generate_lua_ffi_cdef(xml_path):
