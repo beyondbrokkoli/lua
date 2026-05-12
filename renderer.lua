@@ -84,6 +84,7 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     })
 
     -- Set to 1000044001 (Attachment Info)
+    state.colorAttachment = ffi.new("VkRenderingAttachmentInfoKHR[1]")
     state.colorAttachment[0].sType = ffi.cast("uint32_t", 1000044001)
     state.colorAttachment[0].imageLayout = 2
     state.colorAttachment[0].loadOp = 0
@@ -94,7 +95,7 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     state.colorAttachment[0].clearValue.color.float32[3] = 1.0
 
     -- Set to 1000044001 (Attachment Info)
-    state.depthAttachment = ffi.new("VkRenderingAttachmentInfo_Core13[1]")
+    state.depthAttachment = ffi.new("VkRenderingAttachmentInfoKHR[1]")
     state.depthAttachment[0].sType = ffi.cast("uint32_t", 1000044001)
     state.depthAttachment[0].imageLayout = 3
     state.depthAttachment[0].loadOp = 0
@@ -102,7 +103,7 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     state.depthAttachment[0].clearValue.depthStencil.depth = 0.0
 
     -- Set to 1000044000 (Rendering Info)
-    state.renderInfo = ffi.new("VkRenderingInfo_Core13[1]")
+    state.renderInfo = ffi.new("VkRenderingInfoKHR[1]")
     state.renderInfo[0].sType = ffi.cast("uint32_t", 1000044000)
     state.renderInfo[0].renderArea.extent.width = width
     state.renderInfo[0].renderArea.extent.height = height
