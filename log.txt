@@ -12,7 +12,7 @@ $ ./boot.exe
 [LUA] Window Surface Linked from Main Thread!
 [LUA] Hardware GPU Selected!
 [LUA] Logical Device Created!
-[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x0250fe54e928
+[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x01d943ede188
 [MEMORY] ReBAR Supported! Streaming directly to VRAM.
 [MEMORY] Allocated & Mapped VRAM Buffer: MASTER_GPU_BLOCK (256.00 MB)
 [SWAPCHAIN] Building the display chain...
@@ -30,7 +30,8 @@ $ ./boot.exe
 [VULKAN LAYER ENFORCER]
 SEVERITY: 4096
 MESSAGE: vkCmdBeginRendering(): pRenderingInfo->sType must be VK_STRUCTURE_TYPE_RENDERING_INFO.
-The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingInfo-sType-sType)
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_INFO (https://docs.vulkan.org/spec
+/latest/chapters/renderpass.html#VUID-VkRenderingInfo-sType-sType)
 
 
 [VULKAN LAYER ENFORCER]
@@ -41,18 +42,141 @@ The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INF
 
 [VULKAN LAYER ENFORCER]
 SEVERITY: 4096
-MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pDepthAttachment->sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO.
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pDepthAttachment->sType must be VK_STRUCTURE_TYPE_RE
+NDERING_ATTACHMENT_INFO.
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulk
+an.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdDraw(): The VkPipeline 0x170000000017 statically uses descriptor set 0, but because a descriptor was never bound, the pipeline layouts are not compatible.
+If using a descriptor, make sure to call one of vkCmdBindDescriptorSets, vkCmdPushDescriptorSet, vkCmdSetDescriptorBufferOffset, etc for VK_PIPELINE_BIND_POINT_GRAPHICS.
+The Vulkan spec states: If a a bound shader was created as a VkShaderEXT without the VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT flag or as part of a pipeline without the VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT flag, and that shader statically uses a set n, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the V
+kPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://docs.vulkan.org
+/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-08600)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdPipelineBarrier(): pImageMemoryBarriers[0].srcAccessMask (VK_ACCESS_2_COLOR_ATTACHMENT
+_WRITE_BIT) is not supported by stage mask (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT).
+The Vulkan spec states: For each element of pImageMemoryBarriers, if its srcQueueFamilyIndex and dst
+QueueFamilyIndex members are equal, or if its srcQueueFamilyIndex is the queue family index that was used to create the command pool that commandBuffer was allocated from, then its srcAccessMask member must only contain access flags that are supported by one or more of the pipeline stages in srcStageMask, as specified in the table of supported access types (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-vkCmdPipelineBarrier-pImageMemoryBarriers-02819)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->sType must be VK_STRUCTURE_TYPE_RENDERING_INFO.
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_INFO (https://docs.vulkan.org/spec
+/latest/chapters/renderpass.html#VUID-VkRenderingInfo-sType-sType)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pColorAttachments[0].sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO.
 The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
 
 
 [VULKAN LAYER ENFORCER]
 SEVERITY: 4096
-MESSAGE: vkCmdPushConstants(): layout is VK_NULL_HANDLE.
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pDepthAttachment->sType must be VK_STRUCTURE_TYPE_RE
+NDERING_ATTACHMENT_INFO.
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulk
+an.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
 
 
 [VULKAN LAYER ENFORCER]
 SEVERITY: 4096
-MESSAGE: vkCmdPushConstants(): layout Invalid VkPipelineLayout Object 0x0.
-The Vulkan spec states: layout must be a valid VkPipelineLayout handle (https://docs.vulkan.org/spec/latest/chapters/descriptorsets.html#VUID-vkCmdPushConstants-layout-parameter)
+MESSAGE: vkCmdDraw(): The VkPipeline 0x170000000017 statically uses descriptor set 0, but because a descriptor was never bound, the pipeline layouts are not compatible.
+If using a descriptor, make sure to call one of vkCmdBindDescriptorSets, vkCmdPushDescriptorSet, vkCmdSetDescriptorBufferOffset, etc for VK_PIPELINE_BIND_POINT_GRAPHICS.
+The Vulkan spec states: If a a bound shader was created as a VkShaderEXT without the VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT flag or as part of a pipeline without the VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT flag, and that shader statically uses a set n, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the V
+kPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://docs.vulkan.org
+/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-08600)
 
-Segmentation fault         ./boot.exe
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdPipelineBarrier(): pImageMemoryBarriers[0].srcAccessMask (VK_ACCESS_2_COLOR_ATTACHMENT
+_WRITE_BIT) is not supported by stage mask (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT).
+The Vulkan spec states: For each element of pImageMemoryBarriers, if its srcQueueFamilyIndex and dst
+QueueFamilyIndex members are equal, or if its srcQueueFamilyIndex is the queue family index that was used to create the command pool that commandBuffer was allocated from, then its srcAccessMask member must only contain access flags that are supported by one or more of the pipeline stages in srcStageMask, as specified in the table of supported access types (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-vkCmdPipelineBarrier-pImageMemoryBarriers-02819)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->sType must be VK_STRUCTURE_TYPE_RENDERING_INFO.
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_INFO (https://docs.vulkan.org/spec
+/latest/chapters/renderpass.html#VUID-VkRenderingInfo-sType-sType)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pColorAttachments[0].sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO.
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pDepthAttachment->sType must be VK_STRUCTURE_TYPE_RE
+NDERING_ATTACHMENT_INFO.
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulk
+an.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdDraw(): The VkPipeline 0x170000000017 statically uses descriptor set 0, but because a
+descriptor was never bound, the pipeline layouts are not compatible.
+If using a descriptor, make sure to call one of vkCmdBindDescriptorSets, vkCmdPushDescriptorSet, vkC
+mdSetDescriptorBufferOffset, etc for VK_PIPELINE_BIND_POINT_GRAPHICS.
+The Vulkan spec states: If a a bound shader was created as a VkShaderEXT without the VK_SHADER_CREAT
+E_DESCRIPTOR_HEAP_BIT_EXT flag or as part of a pipeline without the VK_PIPELINE_CREATE_2_DESCRIPTOR_
+HEAP_BIT_EXT flag, and that shader statically uses a set n, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://docs.vulkan.org/spec/latest/chapters/drawing.html#VUID-vkCmdDraw-None-08600)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdPipelineBarrier(): pImageMemoryBarriers[0].srcAccessMask (VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT) is not supported by stage mask (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT).
+The Vulkan spec states: For each element of pImageMemoryBarriers, if its srcQueueFamilyIndex and dstQueueFamilyIndex members are equal, or if its srcQueueFamilyIndex is the queue family index that was used to create the command pool that commandBuffer was allocated from, then its srcAccessMask member must only contain access flags that are supported by one or more of the pipeline stages in srcStag
+eMask, as specified in the table of supported access types (https://docs.vulkan.org/spec/latest/chap
+ters/synchronization.html#VUID-vkCmdPipelineBarrier-pImageMemoryBarriers-02819)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkQueueSubmit(): pSubmits[0].pWaitSemaphores[0] queue (VkQueue 0x1d943f9d488) is waiting on semaphore (VkSemaphore 0x210000000021) that has no way to be signaled.
+The Vulkan spec states: All elements of the pWaitSemaphores member of all elements of pSubmits creat
+ed with a VkSemaphoreType of VK_SEMAPHORE_TYPE_BINARY must reference a semaphore signal operation that has been submitted for execution and any semaphore signal operations on which it depends must have also been submitted for execution (https://docs.vulkan.org/spec/latest/chapters/cmdbuffers.html#VUID-vkQueueSubmit-pWaitSemaphores-03238)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkResetCommandPool(): (VkCommandBuffer 0x1d95964ac18) is in use.
+The Vulkan spec states: All VkCommandBuffer objects allocated from commandPool must not be in the pending state (https://docs.vulkan.org/spec/latest/chapters/cmdbuffers.html#VUID-vkResetCommandPool-commandPool-00040)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkAcquireNextImageKHR(): Semaphore must not have any pending operations.
+The Vulkan spec states: If semaphore is not VK_NULL_HANDLE, it must not have any uncompleted signal or wait operations pending (https://docs.vulkan.org/spec/latest/chapters/VK_KHR_surface/wsi.html#VUID-vkAcquireNextImageKHR-semaphore-01779)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkResetFences(): pFences[0] (VkFence 0x1d000000001d) is in use.
+The Vulkan spec states: Each element of pFences must not be currently associated with any queue command that has not yet completed execution on that queue (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-vkResetFences-pFences-01123)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->sType must be VK_STRUCTURE_TYPE_RENDERING_INFO.
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_INFO (https://docs.vulkan.org/spec
+/latest/chapters/renderpass.html#VUID-VkRenderingInfo-sType-sType)
+
+
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pColorAttachments[0].sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO.
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
+

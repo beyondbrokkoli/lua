@@ -228,7 +228,6 @@ function GraphicsPipeline.Init(vk, core_state, width, height, pipelineLayout, co
         pipelineLayout = pipelineLayout -- FATAL SEGFAULT FIX
     }
 end
-end
 
 function GraphicsPipeline.Destroy(vk, core_state, gfx_state)
     print("[TEARDOWN] Destroying Graphics Pipeline & Depth Buffer...")
