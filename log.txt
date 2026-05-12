@@ -12,7 +12,7 @@ $ ./boot.exe
 [LUA] Window Surface Linked from Main Thread!
 [LUA] Hardware GPU Selected!
 [LUA] Logical Device Created!
-[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x0143408ca918
+[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x028942e228a8
 [MEMORY] ReBAR Supported! Streaming directly to VRAM.
 [MEMORY] Allocated & Mapped VRAM Buffer: MASTER_GPU_BLOCK (256.00 MB)
 [SWAPCHAIN] Building the display chain...
@@ -29,45 +29,10 @@ $ ./boot.exe
 
 [VULKAN LAYER ENFORCER]
 SEVERITY: 4096
-MESSAGE: vkResetCommandBuffer(): VkCommandBuffer 0x14356099f48 was created from VkCommandPool 0x180000000018  which was created with VK_COMMAND_POOL_CREATE_TRANSIENT_BIT.
-The Vulkan spec states: commandBuffer must have been allocated from a pool that was created with the VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT (https://docs.vulkan.org/spec/latest/chapters/cmdbuffers.html#VUID-vkResetCommandBuffer-commandBuffer-00046)
+MESSAGE: vkCmdPipelineBarrier(): pImageMemoryBarriers[1].newLayout (252) does not fall within the begin..end range of the VkImageLayout enumeration tokens and is not an extension added token.
+The Vulkan spec states: newLayout must be a valid VkImageLayout value (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-newLayout-parameter)
 
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBindPipeline(): pipelineBindPoint (32) does not fall within the begin..end range of the VkPipelineBindPoint enumeration tokens and is not an extension added token.
-The Vulkan spec states: pipelineBindPoint must be a valid VkPipelineBindPoint value (https://docs.vulkan.org/spec/latest/chapters/pipelines.html#VUID-vkCmdBindPipeline-pipelineBindPoint-parameter)
+[LUA FATAL ERROR] main.lua:55: FATAL: FIBER CRASH -> .\renderer.lua:182: attempt to write to constant location
+[LUA-OS-THREAD] VM Destroyed.
 
-
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBindPipeline(): pipelineBindPoint is Unhandled VkPipelineBindPoint but VkPipeline 0x110000000011 is created as VK_PIPELINE_BIND_POINT_COMPUTE.
-
-
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBindDescriptorSets(): pipelineBindPoint (32) does not fall within the begin..end range of the VkPipelineBindPoint enumeration tokens and is not an extension added token.
-The Vulkan spec states: pipelineBindPoint must be a valid VkPipelineBindPoint value (https://docs.vulkan.org/spec/latest/chapters/descriptorsets.html#VUID-vkCmdBindDescriptorSets-pipelineBindPoint-parameter)
-
-
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdBindDescriptorSets(): pDescriptorSets[0] (VkDescriptorSet 0x0) is not a valid VkDescriptorSet.
-The Vulkan spec states: If the graphicsPipelineLibrary feature is not enabled, each element of pDescriptorSets must be a valid VkDescriptorSet (https://docs.vulkan.org/spec/latest/chapters/descriptorsets.html#VUID-vkCmdBindDescriptorSets-pDescriptorSets-06563)
-
-
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdPushConstants(): is called with
-  stageFlags (VK_SHADER_STAGE_COMPUTE_BIT), offset (0), size (64)
-which is missing stageFlags from the overlapping VkPushConstantRange in VkPipelineLayout 0xd000000000d
-  stageFlags (VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_COMPUTE_BIT), offset (0), size (64).
-The Vulkan spec states: For each byte in the range specified by offset and size and for each push constant range that overlaps that byte, stageFlags must include all stages in that push constant range's VkPushConstantRange::stageFlags (https://docs.vulkan.org/spec/latest/chapters/descriptorsets.html#VUID-vkCmdPushConstants-offset-01796)
-
-
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdDispatch(): A valid VK_PIPELINE_BIND_POINT_COMPUTE pipeline must be bound with vkCmdBindPipeline before calling this command.
-The Vulkan spec states: If the shaderObject feature is not enabled, a valid pipeline must be bound to the pipeline bind point used by this command (https://docs.vulkan.org/spec/latest/chapters/dispatch.html#VUID-vkCmdDispatch-None-08606)
-
-Segmentation fault         ./boot.exe
