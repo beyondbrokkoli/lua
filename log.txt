@@ -1,251 +1,70 @@
+AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua
+$ ./boot.exe
+[C-CORE] Booting Headless Worker...
+[LUA-OS-THREAD] Booting Lua VM...
+[LUA IO] Booting Headless...
+[LUA] Initializing Vulkan Core (Instance Generation)...
+[LUA] Vulkan Instance Created!
+[C-CORE] Validation Layer Enforcer Injected Successfully!
+[LUA IO] Ordering C-Core to Boot GLFW Window...
+[C-CORE] Window & Surface Created on Lua's Demand!
+[LUA] Resuming Vulkan Setup. Finalizing Logical Device...
+[LUA] Window Surface Linked from Main Thread!
+[LUA] Hardware GPU Selected!
+[LUA] Logical Device Created!
+[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x0209e53bd068
+[MEMORY] ReBAR Supported! Streaming directly to VRAM.
+[MEMORY] Allocated & Mapped VRAM Buffer: MASTER_GPU_BLOCK (256.00 MB)
+[SWAPCHAIN] Building the display chain...
+[SWAPCHAIN] Created successfully with 3 images!
+[DESCRIPTORS] Wiring Master VRAM Arena as a Unified SSBO...
+[DESCRIPTORS] Unified Memory Matrix successfully bound!
+[COMPUTE] Compiling Swarm Intelligence...
+[COMPUTE] Swarm Pipeline Ready!
+[GRAPHICS] Building Reverse-Z Depth Buffer and Shader Modules...
+[GRAPHICS] Swarm Pipeline Successfully Compiled!
+[FACTORY] Forging Triple-Buffered Command Matrix...
+[RENDERER] Forging Synchronization Primitives...
+[LUA CO] Render Fiber Weaving...
 
-Thread 8 received signal SIGSEGV, Segmentation fault.
-[Switching to Thread 3604.0x22bc]
-0x0000000000000000 in ?? ()
-(gdb) thread apply all bt full
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->sType must be VK_STRUCTURE_TYPE_RENDERING_INFO.
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingInfo-sType-sType)
 
-Thread 14 (Thread 3604.0x15f4):
-#0  0x00007ffe40462654 in ntdll!ZwWaitForMultipleObjects () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe3cee1a93 in WaitForMultipleObjectsEx () from /c/Windows/System32/KERNELBASE.dll
-No symbol table info available.
-#2  0x00007ffe3cee1961 in WaitForMultipleObjects () from /c/Windows/System32/KERNELBASE.dll
-No symbol table info available.
-#3  0x00007ffdabad3f31 in igxelpicd64!RegisterProcTableCallback () from /c/Windows/System32/DriverStore/FileRepository/iigd_dch.inf_amd64_6dec6cc81cc06c3d/igxelpicd64.dll
-No symbol table info available.
-#4  0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#5  0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#6  0x0000000000000000 in ?? ()
-No symbol table info available.
 
-Thread 13 (Thread 3604.0x2110):
-#0  0x00007ffe40462cb4 in ntdll!ZwAlpcSendWaitReceivePort () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe3a0270dd in dwmapi!DwmTransitionOwnedWindow () from /c/Windows/SYSTEM32/dwmapi.dll
-No symbol table info available.
-#2  0x00007ffe3a026cdf in dwmapi!DwmTransitionOwnedWindow () from /c/Windows/SYSTEM32/dwmapi.dll
-No symbol table info available.
-#3  0x00007ffe3a0144b4 in dwmapi!DwmFlush () from /c/Windows/SYSTEM32/dwmapi.dll
-No symbol table info available.
-#4  0x00007ffe3a0143b7 in dwmapi!DwmFlush () from /c/Windows/SYSTEM32/dwmapi.dll
---Type <RET> for more, q to quit, c to continue without paging--c
-No symbol table info available.
-#5  0x00007ffdabaca7ed in igxelpicd64!DrvValidateVersion () from /c/Windows/System32/DriverStore/FileRepository/iigd_dch.inf_amd64_6dec6cc81cc06c3d/igxelpicd64.dll
-No symbol table info available.
-#6  0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#7  0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#8  0x0000000000000000 in ?? ()
-No symbol table info available.
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pColorAttachments[0].sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO.
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
 
-Thread 12 (Thread 3604.0x109c):
-#0  0x00007ffe40465754 in ntdll!ZwWaitForAlertByThreadId () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe40394c0e in ntdll!RtlSleepConditionVariableSRW () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#2  0x00007ffe3cee1d78 in SleepConditionVariableSRW () from /c/Windows/System32/KERNELBASE.dll
-No symbol table info available.
-#3  0x00007ffdaf592068 in igvk64!ctlTemperatureGetState () from /c/Windows/System32/DriverStore/FileRepository/iigd_dch.inf_amd64_6dec6cc81cc06c3d/igvk64.dll
-No symbol table info available.
-#4  0x00007ffdae9851ed in igvk64!SetDriverStoreDir () from /c/Windows/System32/DriverStore/FileRepository/iigd_dch.inf_amd64_6dec6cc81cc06c3d/igvk64.dll
-No symbol table info available.
-#5  0x00007ffdae95911c in igvk64!SetDriverStoreDir () from /c/Windows/System32/DriverStore/FileRepository/iigd_dch.inf_amd64_6dec6cc81cc06c3d/igvk64.dll
-No symbol table info available.
-#6  0x00007ffdae958328 in igvk64!SetDriverStoreDir () from /c/Windows/System32/DriverStore/FileRepository/iigd_dch.inf_amd64_6dec6cc81cc06c3d/igvk64.dll
-No symbol table info available.
-#7  0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#8  0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#9  0x0000000000000000 in ?? ()
-No symbol table info available.
 
-Thread 11 (Thread 3604.0x3898):
-#0  0x00007ffe40462654 in ntdll!ZwWaitForMultipleObjects () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe3cee1a93 in WaitForMultipleObjectsEx () from /c/Windows/System32/KERNELBASE.dll
-No symbol table info available.
-#2  0x00007ffe3cee1961 in WaitForMultipleObjects () from /c/Windows/System32/KERNELBASE.dll
-No symbol table info available.
-#3  0x00007ffdaea02dd3 in igvk64!SetDriverStoreDir () from /c/Windows/System32/DriverStore/FileRepository/iigd_dch.inf_amd64_6dec6cc81cc06c3d/igvk64.dll
-No symbol table info available.
-#4  0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#5  0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#6  0x0000000000000000 in ?? ()
-No symbol table info available.
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pDepthAttachment->sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO.
+The Vulkan spec states: sType must be VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-sType-sType)
 
-Thread 10 (Thread 3604.0x2108):
-#0  0x00007ffe3dd11334 in win32u!NtUserGetMessage () from /c/Windows/System32/win32u.dll
-No symbol table info available.
-#1  0x00007ffe3fddb3e2 in USER32!GetMessageW () from /c/Windows/System32/USER32.dll
-No symbol table info available.
-#2  0x00007ffe0bf68897 in ?? () from /c/ProgramData/obs-studio-hook/graphics-hook64.dll
-No symbol table info available.
-#3  0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#4  0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#5  0x0000000000000000 in ?? ()
-No symbol table info available.
 
-Thread 9 (Thread 3604.0x2120):
-#0  0x00007ffe40461b84 in ntdll!ZwWaitForSingleObject () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe3cedb1bf in WaitForSingleObjectEx () from /c/Windows/System32/KERNELBASE.dll
-No symbol table info available.
-#2  0x00007ffe0bf68d35 in ?? () from /c/ProgramData/obs-studio-hook/graphics-hook64.dll
-No symbol table info available.
-#3  0x00007ffe0bf6919b in ?? () from /c/ProgramData/obs-studio-hook/graphics-hook64.dll
-No symbol table info available.
-#4  0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#5  0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#6  0x0000000000000000 in ?? ()
-No symbol table info available.
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBeginRendering(): pRenderingInfo->pDepthAttachment->storeOp (2) does not fall within the begin..end range of the VkAttachmentStoreOp enumeration tokens and is not an extension added token.
+The Vulkan spec states: storeOp must be a valid VkAttachmentStoreOp value (https://docs.vulkan.org/spec/latest/chapters/renderpass.html#VUID-VkRenderingAttachmentInfo-storeOp-parameter)
 
-Thread 8 (Thread 3604.0x22bc):
-#0  0x0000000000000000 in ?? ()
-No symbol table info available.
-#1  0x00007ffe08cf54cf in ?? () from /home/HalimOmarZaghdoudi/lua/lua51.dll
-No symbol table info available.
-#2  0x00007ffe08d4723e in ?? () from /home/HalimOmarZaghdoudi/lua/lua51.dll
-No symbol table info available.
-#3  0x00007ffe08d5ec4a in ?? () from /home/HalimOmarZaghdoudi/lua/lua51.dll
-No symbol table info available.
-#4  0x00007ffe08cf3010 in ?? () from /home/HalimOmarZaghdoudi/lua/lua51.dll
-No symbol table info available.
-#5  0x00007ffe08cf3e5b in ?? () from /home/HalimOmarZaghdoudi/lua/lua51.dll
-No symbol table info available.
-#6  0x00007ffe08d09e63 in ?? () from /home/HalimOmarZaghdoudi/lua/lua51.dll
-No symbol table info available.
-#7  0x00007ff68e1d14d7 in lua_co_overlord_loop ()
-No symbol table info available.
-#8  0x00007ffe244767ed in ?? () from /mingw64/bin/libwinpthread-1.dll
-No symbol table info available.
-#9  0x00007ffe3ffaf0ad in msvcrt!_beginthreadex () from /c/Windows/System32/msvcrt.dll
-No symbol table info available.
-#10 0x00007ffe3ffaf17c in msvcrt!_endthreadex () from /c/Windows/System32/msvcrt.dll
-No symbol table info available.
-#11 0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#12 0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#13 0x0000000000000000 in ?? ()
-No symbol table info available.
 
-Thread 7 (Thread 3604.0x389c):
-#0  0x00007ffe40462654 in ntdll!ZwWaitForMultipleObjects () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe3cee1a93 in WaitForMultipleObjectsEx () from /c/Windows/System32/KERNELBASE.dll
-No symbol table info available.
-#2  0x00007ffe3975e5d8 in ?? () from /c/Windows/SYSTEM32/CoreMessaging.dll
-No symbol table info available.
-#3  0x00007ffe3975e2b3 in ?? () from /c/Windows/SYSTEM32/CoreMessaging.dll
-No symbol table info available.
-#4  0x00007ffe3975df0e in ?? () from /c/Windows/SYSTEM32/CoreMessaging.dll
-No symbol table info available.
-#5  0x00007ffe397515dc in ?? () from /c/Windows/SYSTEM32/CoreMessaging.dll
-No symbol table info available.
-#6  0x00007ffe39750b67 in ?? () from /c/Windows/SYSTEM32/CoreMessaging.dll
-No symbol table info available.
-#7  0x00007ffe3974f194 in ?? () from /c/Windows/SYSTEM32/CoreMessaging.dll
-No symbol table info available.
-#8  0x00007ffe3974ed2d in ?? () from /c/Windows/SYSTEM32/CoreMessaging.dll
-No symbol table info available.
-#9  0x00007ffe39752058 in ?? () from /c/Windows/SYSTEM32/CoreMessaging.dll
-No symbol table info available.
-#10 0x00007ffe397cd6ae in CoreUICallCreateEndpointHost () from /c/Windows/SYSTEM32/CoreMessaging.dll
-No symbol table info available.
-#11 0x00007ffe397c69af in CoreUICreate () from /c/Windows/SYSTEM32/CoreMessaging.dll
-No symbol table info available.
-#12 0x00007ffe397a4a4b in CoreUICallReceive () from /c/Windows/SYSTEM32/CoreMessaging.dll
-No symbol table info available.
-#13 0x00007ffe22dea4dd in SetInputFocus () from /c/Windows/SYSTEM32/inputhost.dll
-No symbol table info available.
-#14 0x00007ffe22de0eb9 in InputHost!CreateInputDeviceWatcher () from /c/Windows/SYSTEM32/inputhost.dll
-No symbol table info available.
-#15 0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#16 0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#17 0x0000000000000000 in ?? ()
-No symbol table info available.
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdBindVertexBuffers(): pBuffers[0] (VkBuffer 0x30000000003) was created with VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_2_INDIRECT_BUFFER_BIT but requires VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT.
+The Vulkan spec states: All elements of pBuffers must have been created with the VK_BUFFER_USAGE_VERTEX_BUFFER_BIT usage flag set (https://docs.vulkan.org/spec/latest/chapters/fxvertex.html#VUID-vkCmdBindVertexBuffers-pBuffers-00627)
 
-Thread 6 (Thread 3604.0x1ab4):
-#0  0x00007ffe404657b4 in ntdll!ZwWaitForWorkViaWorkerFactory () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe40375dfe in ntdll!RtlSetThreadSubProcessTag () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#2  0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#3  0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#4  0x0000000000000000 in ?? ()
-No symbol table info available.
 
-Thread 5 (Thread 3604.0x33f8):
-#0  0x00007ffe404657b4 in ntdll!ZwWaitForWorkViaWorkerFactory () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe40375dfe in ntdll!RtlSetThreadSubProcessTag () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#2  0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#3  0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#4  0x0000000000000000 in ?? ()
-No symbol table info available.
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdPushConstants(): layout is VK_NULL_HANDLE.
 
-Thread 4 (Thread 3604.0x2810):
-#0  0x00007ffe404657b4 in ntdll!ZwWaitForWorkViaWorkerFactory () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe40375dfe in ntdll!RtlSetThreadSubProcessTag () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#2  0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#3  0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#4  0x0000000000000000 in ?? ()
-No symbol table info available.
 
-Thread 3 (Thread 3604.0x790):
-#0  0x00007ffe404657b4 in ntdll!ZwWaitForWorkViaWorkerFactory () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe40375dfe in ntdll!RtlSetThreadSubProcessTag () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#2  0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#3  0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#4  0x0000000000000000 in ?? ()
-No symbol table info available.
+[VULKAN LAYER ENFORCER]
+SEVERITY: 4096
+MESSAGE: vkCmdPushConstants(): layout Invalid VkPipelineLayout Object 0x0.
+The Vulkan spec states: layout must be a valid VkPipelineLayout handle (https://docs.vulkan.org/spec/latest/chapters/descriptorsets.html#VUID-vkCmdPushConstants-layout-parameter)
 
-Thread 2 (Thread 3604.0x1a88):
-#0  0x00007ffe404657b4 in ntdll!ZwWaitForWorkViaWorkerFactory () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe40375dfe in ntdll!RtlSetThreadSubProcessTag () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#2  0x00007ffe3ea3e8d7 in KERNEL32!BaseThreadInitThunk () from /c/Windows/System32/KERNEL32.DLL
-No symbol table info available.
-#3  0x00007ffe4038c3fc in ntdll!RtlUserThreadStart () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#4  0x0000000000000000 in ?? ()
-No symbol table info available.
-
-Thread 1 (Thread 3604.0x2128):
-#0  0x00007ffe40462184 in ntdll!ZwDelayExecution () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#1  0x00007ffe403d1014 in ntdll!RtlDelayExecution () from /c/Windows/SYSTEM32/ntdll.dll
-No symbol table info available.
-#2  0x00007ffe3cee6f01 in SleepEx () from /c/Windows/System32/KERNELBASE.dll
-No symbol table info available.
-#3  0x00007ff68e1d2a93 in usleep (us=<optimized out>) at D:/W/B/src/mingw-w64/mingw-w64-crt/misc/mingw_usleep.c:14
-No locals.
-#4  0x00007ff68e1d8f90 in main ()
-No symbol table info available.
-(gdb)
+Segmentation fault         ./boot.exe
