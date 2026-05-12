@@ -1,5 +1,7 @@
 local ffi = require("ffi")
 local bit = require("bit")
+local math = require("math")
+local vmath = require("vmath")
 local vulkan_core = require("vulkan_core")
 local memory = require("memory")
 local swapchain_core = require("swapchain")
@@ -18,15 +20,27 @@ ffi.cdef[[
     void vibe_get_window_size(int* width, int* height);
     void vibe_set_glfw_cmd(int cmd, int w, int h);
     int vibe_get_last_key();
+
+    typedef struct {
+        uint32_t pos_x_idx;
+        uint32_t pos_y_idx;
+        uint32_t pos_z_idx;
+        uint32_t particle_count;
+        
+        float dt;
+        uint32_t _pad[3]; 
+        
+        float viewProj[16];
+    } PushConstants;
 ]]
 
 local active_coroutines = {}
-local co_blockers = {} 
+local co_blockers = {}
 
-local function start_fiber(func) 
+local function start_fiber(func)
     local co = coroutine.create(func)
     table.insert(active_coroutines, co)
-    co_blockers[co] = function() return true end 
+    co_blockers[co] = function() return true end
 end
 
 local function run_weaver()
@@ -34,16 +48,16 @@ local function run_weaver()
         for i = #active_coroutines, 1, -1 do
             local co = active_coroutines[i]
             local blocker = co_blockers[co]
-            
+
             if not blocker or blocker() then
                 local success, next_blocker = coroutine.resume(co)
                 assert(success, "FATAL: FIBER CRASH -> " .. tostring(next_blocker))
-                
+
                 if coroutine.status(co) == "dead" then
                     table.remove(active_coroutines, i)
                     co_blockers[co] = nil
                 else
-                    co_blockers[co] = next_blocker 
+                    co_blockers[co] = next_blocker
                 end
             end
         end
@@ -54,18 +68,40 @@ end
 local function render_fiber(vk, device, sc_state, queue, cmd_state)
     print("[LUA CO] Render Fiber Weaving...")
     local frame_count = 0
-    
+
+    -- Persistent State Initialization
+    local pc = ffi.new("PushConstants")
+    pc.pos_x_idx = 0
+    pc.pos_y_idx = 1000000
+    pc.pos_z_idx = 2000000
+    pc.particle_count = 1000000
+
+    local proj = ffi.new("float[16]")
+    local view = ffi.new("float[16]")
+
+    local aspect = sc_state.extent.width / sc_state.extent.height
+    vmath.perspective_inf_revz(70.0, aspect, 0.1, proj)
+
     while ffi.C.vibe_get_is_running() == 1 do
         cmd_factory.ResetCurrentFrame(vk, device, cmd_state)
-        
+
         -- [Future Target: vkAcquireNextImageKHR]
         -- [Future Target: allocate buffer via cmd_factory.AllocateBuffer()]
+
+        -- Matrix Math (Zero Allocation)
+        pc.dt = frame_count * 0.016
+        local orbit_x = math.sin(pc.dt) * 400.0
+        local orbit_z = math.cos(pc.dt) * 400.0
+        
+        vmath.lookAt(orbit_x, 200.0, orbit_z, 0.0, 0.0, 0.0, view)
+        vmath.multiply_mat4(proj, view, pc.viewProj)
+
         -- [Future Target: Record & vkQueueSubmit]
         -- [Future Target: vkQueuePresentKHR]
-        
+
         cmd_factory.AdvanceFrame(cmd_state)
         frame_count = frame_count + 1
-        
+
         coroutine.yield(function() return true end)
     end
     print("[LUA CO] Render Fiber Terminated. Frames: " .. tostring(frame_count))
@@ -73,20 +109,20 @@ end
 
 local function command_glfw_fiber()
     print("[LUA IO] Booting Headless...")
-    
+
     local vk_state = vulkan_core.create_instance()
     ffi.C.vibe_publish_vk_instance(vk_state.instance)
 
     print("[LUA IO] Ordering C-Core to Boot GLFW Window...")
-    ffi.C.vibe_set_glfw_cmd(1, 1280, 720) 
+    ffi.C.vibe_set_glfw_cmd(1, 1280, 720)
 
-    coroutine.yield(function() 
-        return ffi.C.vibe_get_vk_surface() ~= nil 
+    coroutine.yield(function()
+        return ffi.C.vibe_get_vk_surface() ~= nil
     end)
-    
+
     local surface_ptr = ffi.C.vibe_get_vk_surface()
     vulkan_core.finalize_device_and_swapchain(vk_state, surface_ptr)
-    
+
     local vk = vk_state.vk
     local device = vk_state.device
 
@@ -103,22 +139,22 @@ local function command_glfw_fiber()
     local comp_state = compute.Init(vk, device, desc_state.pipelineLayout)
     local gfx_state = graphics.Init(vk, vk_state, pWidth[0], pHeight[0], desc_state.pipelineLayout, sc_state.format)
     local cmd_state = cmd_factory.Init(vk, device, vk_state.qIndex, 3)
-    
-    start_fiber(function() 
-        render_fiber(vk, device, sc_state, vk_state.queue, cmd_state) 
+
+    start_fiber(function()
+        render_fiber(vk, device, sc_state, vk_state.queue, cmd_state)
     end)
 
     local window_active = true
     while window_active do
         local key = ffi.C.vibe_get_last_key()
-        
-        if key == 256 then 
+
+        if key == 256 then
             print("[LUA IO] ESCAPE PRESSED. Executing Teardown...")
             ffi.C.vibe_trigger_shutdown()
             window_active = false
         end
-        
-        coroutine.yield(function() return true end) 
+
+        coroutine.yield(function() return true end)
     end
 
     cmd_factory.Destroy(vk, device, cmd_state)
