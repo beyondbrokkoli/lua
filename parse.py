@@ -64,8 +64,8 @@ TARGET_STRUCTS = {
     "VkCommandBufferBeginInfo",
     "VkMemoryBarrier",
     "VkImageMemoryBarrier",
-    "VkRenderingAttachmentInfoKHR",
-    "VkRenderingInfoKHR",
+    "VkRenderingAttachmentInfo",
+    "VkRenderingInfo",
     "VkSubmitInfo",
     "VkPresentInfoKHR"
 }
