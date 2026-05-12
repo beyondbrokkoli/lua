@@ -9,7 +9,7 @@ function CommandFactory.Init(vk, device, queueFamilyIndex, frames_in_flight)
     local pools = ffi.new("VkCommandPool[?]", frames_in_flight)
     local poolInfo = ffi.new("VkCommandPoolCreateInfo", {
         sType = 39, -- VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO
-        flags = 1,  -- VK_COMMAND_POOL_CREATE_TRANSIENT_BIT
+        flags = 2, -- VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
         queueFamilyIndex = queueFamilyIndex
     })
 

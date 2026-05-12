@@ -141,8 +141,7 @@ end
 -- ============================================================================
 -- HOT LOOP EXECUTION (ZERO GC)
 -- ============================================================================
-
-function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current_frame, sync, f_state, unified_buffer, p_compute, p_gfx, pc_bytes)
+function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current_frame, sync, f_state, unified_buffer, p_compute, p_gfx, pc_bytes, desc_state)
     local inFlightFence = sync.inFlight[current_frame]
     local imageAvailable = sync.imageAvailable[current_frame]
     local renderFinished = sync.renderFinished[current_frame]
@@ -159,14 +158,14 @@ function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current
     -- 2. Record Command Buffer
     vk.vkBeginCommandBuffer(cmd_buffer, f_state.cmdBeginInfo)
 
+
     -- === PASS A: COMPUTE ===
-    vk.vkCmdBindPipeline(cmd_buffer, 32, p_compute.pipeline) -- COMPUTE
-    vk.vkCmdBindDescriptorSets(cmd_buffer, 32, p_compute.pipelineLayout, 0, 1, ffi.new("VkDescriptorSet[1]", {p_compute.set0}), 0, nil)
+    vk.vkCmdBindPipeline(cmd_buffer, 1, p_compute.pipeline) -- 1 = VK_PIPELINE_BIND_POINT_COMPUTE
+    vk.vkCmdBindDescriptorSets(cmd_buffer, 1, p_compute.pipelineLayout, 0, 1, ffi.new("VkDescriptorSet[1]", {desc_state.set0}), 0, nil)
 
-    -- FORCE exactly 64 bytes to prevent a Vulkan Validation Crash!
-    vk.vkCmdPushConstants(cmd_buffer, p_compute.pipelineLayout, 32, 0, 64, pc_bytes)
-
-    vk.vkCmdDispatch(cmd_buffer, 1024, 1, 1) -- Arbitrary generic dispatch size for now
+    -- FORCE exactly 64 bytes. 33 = STAGE_ALL (Vertex | Compute)
+    vk.vkCmdPushConstants(cmd_buffer, p_compute.pipelineLayout, 33, 0, 64, pc_bytes)
+    vk.vkCmdDispatch(cmd_buffer, 1024, 1, 1)
 
     -- Barrier: Compute Write -> Graphics Read
     vk.vkCmdPipelineBarrier(cmd_buffer, 2048, bit.bor(128, 65536), 0, 1, ffi.new("VkMemoryBarrier[1]", {f_state.computeBarrier}), 0, nil, 0, nil)
@@ -188,13 +187,12 @@ function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current
     vk.vkCmdSetViewport(cmd_buffer, 0, 1, f_state.viewport)
     vk.vkCmdSetScissor(cmd_buffer, 0, 1, f_state.scissor)
 
-    -- Bind our single unified SSBO as a vertex buffer (if vertex pulling isn't used)
+    -- Bind our single unified SSBO as a vertex buffer
     vk.vkCmdBindVertexBuffers(cmd_buffer, 0, 1, ffi.new("VkBuffer[1]", {unified_buffer}), f_state.offsets)
 
-    -- FORCE exactly 64 bytes to prevent a Vulkan Validation Crash!
-    vk.vkCmdPushConstants(cmd_buffer, p_gfx.pipelineLayout, 1, 0, 64, pc_bytes)
+    -- FORCE exactly 64 bytes. 33 = STAGE_ALL (Vertex | Compute)
+    vk.vkCmdPushConstants(cmd_buffer, p_gfx.pipelineLayout, 33, 0, 64, pc_bytes)
 
-    -- USE the dynamic particle count from the Push Constants!
     vk.vkCmdDraw(cmd_buffer, pc_bytes.particle_count, 1, 0, 0)
 
     f_state.vkCmdEndRendering(cmd_buffer)

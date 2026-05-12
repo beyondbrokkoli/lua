@@ -65,8 +65,7 @@ local function run_weaver()
         if #active_coroutines == 0 then break end
     end
 end
-
-local function render_fiber(vk, device, sc_state, queue, cmd_state, sync_state, frame_state, master_buf, comp_state, gfx_state)
+local function render_fiber(vk, device, sc_state, queue, cmd_state, sync_state, frame_state, master_buf, comp_state, gfx_state, desc_state)
     print("[LUA CO] Render Fiber Weaving...")
     local frame_count = 0
 
@@ -100,7 +99,7 @@ local function render_fiber(vk, device, sc_state, queue, cmd_state, sync_state, 
         local success = renderer.ExecuteFrame(
             vk, device, queue, sc_state, cmd_buffer,
             cmd_state.current_frame, sync_state, frame_state,
-            master_buf, comp_state, gfx_state, pc
+            master_buf, comp_state, gfx_state, pc, desc_state
         )
 
         if not success then
@@ -153,7 +152,7 @@ local function command_glfw_fiber()
     local frame_state = renderer.AllocateFrameState(vk, device, sc_state.extent.width, sc_state.extent.height)
 
     start_fiber(function()
-        render_fiber(vk, device, sc_state, vk_state.queue, cmd_state, sync_state, frame_state, memory.Buffers["MASTER_GPU_BLOCK"], comp_state, gfx_state)
+        render_fiber(vk, device, sc_state, vk_state.queue, cmd_state, sync_state, frame_state, memory.Buffers["MASTER_GPU_BLOCK"], comp_state, gfx_state, desc_state)
     end)
 
     local window_active = true
