@@ -83,9 +83,8 @@ function Renderer.AllocateFrameState(vk, device, width, height)
         dstAccessMask = 0
     })
 
-    -- KHR Native Structs to appease Validation Layers
-    state.colorAttachment = ffi.new("VkRenderingAttachmentInfoKHR[1]")
-    state.colorAttachment[0].sType = 1000044000
+    -- Set to 1000044001 (Attachment Info)
+    state.colorAttachment[0].sType = ffi.cast("uint32_t", 1000044001)
     state.colorAttachment[0].imageLayout = 2
     state.colorAttachment[0].loadOp = 0
     state.colorAttachment[0].storeOp = 0
@@ -94,15 +93,17 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     state.colorAttachment[0].clearValue.color.float32[2] = 0.02
     state.colorAttachment[0].clearValue.color.float32[3] = 1.0
 
-    state.depthAttachment = ffi.new("VkRenderingAttachmentInfoKHR[1]")
-    state.depthAttachment[0].sType = 1000044000
+    -- Set to 1000044001 (Attachment Info)
+    state.depthAttachment = ffi.new("VkRenderingAttachmentInfo_Core13[1]")
+    state.depthAttachment[0].sType = ffi.cast("uint32_t", 1000044001)
     state.depthAttachment[0].imageLayout = 3
     state.depthAttachment[0].loadOp = 0
     state.depthAttachment[0].storeOp = 1
     state.depthAttachment[0].clearValue.depthStencil.depth = 0.0
 
-    state.renderInfo = ffi.new("VkRenderingInfoKHR[1]")
-    state.renderInfo[0].sType = 1000044001
+    -- Set to 1000044000 (Rendering Info)
+    state.renderInfo = ffi.new("VkRenderingInfo_Core13[1]")
+    state.renderInfo[0].sType = ffi.cast("uint32_t", 1000044000)
     state.renderInfo[0].renderArea.extent.width = width
     state.renderInfo[0].renderArea.extent.height = height
     state.renderInfo[0].layerCount = 1
@@ -114,13 +115,13 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     state.scissor = ffi.new("VkRect2D[1]", {{ {0, 0}, {width, height} }})
     state.offsets = ffi.new("VkDeviceSize[1]", {0})
 
-    state.submitInfo = ffi.new("VkSubmitInfo", { 
-        sType = 4, 
-        waitSemaphoreCount = 1, 
-        commandBufferCount = 1, 
-        signalSemaphoreCount = 1 
+    state.submitInfo = ffi.new("VkSubmitInfo", {
+        sType = 4,
+        waitSemaphoreCount = 1,
+        commandBufferCount = 1,
+        signalSemaphoreCount = 1
     })
-    
+
     state.waitStages = ffi.new("int32_t[1]", { 256 })
     state.submitInfo.pWaitDstStageMask = state.waitStages
     state.cmdPtr = ffi.new("VkCommandBuffer[1]")
