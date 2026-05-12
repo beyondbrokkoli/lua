@@ -3,7 +3,7 @@ TARGET_FUNCTIONS = {
     # Instance/Device/Queues
     "vkCreateInstance", "vkEnumeratePhysicalDevices", "vkCreateDevice", "vkDestroyInstance", "vkDestroyDevice",
     "vkQueueSubmit", "vkQueueWaitIdle", "vkDeviceWaitIdle", "vkGetPhysicalDeviceQueueFamilyProperties",
-    "vkGetDeviceQueue",
+    "vkGetDeviceQueue", "vkGetDeviceProcAddr",
 
     # Memory/Buffers (The ReBAR Allocator)
     "vkGetPhysicalDeviceMemoryProperties", "vkCreateBuffer", "vkDestroyBuffer",
