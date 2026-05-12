@@ -12,7 +12,7 @@ $ ./boot.exe
 [LUA] Window Surface Linked from Main Thread!
 [LUA] Hardware GPU Selected!
 [LUA] Logical Device Created!
-[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x0158510af698
+[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x02d87c9445a8
 [MEMORY] ReBAR Supported! Streaming directly to VRAM.
 [MEMORY] Allocated & Mapped VRAM Buffer: MASTER_GPU_BLOCK (256.00 MB)
 [SWAPCHAIN] Building the display chain...
@@ -24,11 +24,8 @@ $ ./boot.exe
 [GRAPHICS] Building Reverse-Z Depth Buffer and Shader Modules...
 [GRAPHICS] Swarm Pipeline Successfully Compiled!
 [FACTORY] Forging Triple-Buffered Command Matrix...
-[LUA CO] Render Fiber Weaving...
-[LUA IO] ESCAPE PRESSED. Executing Teardown...
+[RENDERER] Forging Synchronization Primitives...
+
+[LUA FATAL ERROR] main.lua:55: FATAL: FIBER CRASH -> .\renderer.lua:18: declaration specifier expected near 'VkFenceCreateInfo'
 [LUA-OS-THREAD] VM Destroyed.
 
-[C-CORE] Shutdown triggered. Waiting for Lua VM...
-[C-CORE] Clean Exit.
-
-AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua
