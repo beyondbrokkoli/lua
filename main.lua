@@ -83,9 +83,18 @@ local function render_fiber(vk, device, sc_state, queue, cmd_state, sync_state, 
     vmath.perspective_inf_revz(70.0, aspect, 0.1, proj)
 
     while ffi.C.vibe_get_is_running() == 1 do
+        -- ==========================================================
+        -- 1. ABSOLUTE BARRICADE: Wait for GPU to finish this frame
+        -- ==========================================================
+        local inFlightFence = sync_state.inFlight[cmd_state.current_frame]
+        local TIMEOUT_MAX = ffi.cast("uint64_t", -1)
+        vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {inFlightFence}), 1, TIMEOUT_MAX)
+
+        -- ==========================================================
+        -- 2. SAFE ZONE: Reset & Rebuild
+        -- ==========================================================
         cmd_factory.ResetCurrentFrame(vk, device, cmd_state)
 
-        -- Matrix Math (Zero Allocation)
         pc.dt = frame_count * 0.016
         local orbit_x = math.sin(pc.dt) * 400.0
         local orbit_z = math.cos(pc.dt) * 400.0
@@ -93,7 +102,6 @@ local function render_fiber(vk, device, sc_state, queue, cmd_state, sync_state, 
         vmath.lookAt(orbit_x, 200.0, orbit_z, 0.0, 0.0, 0.0, view)
         vmath.multiply_mat4(proj, view, pc.viewProj)
 
-        -- >>> RENDERER EXECUTION PATCH <<<
         local cmd_buffer = cmd_factory.AllocateBuffer(vk, device, cmd_state)
 
         local success = renderer.ExecuteFrame(
@@ -105,11 +113,9 @@ local function render_fiber(vk, device, sc_state, queue, cmd_state, sync_state, 
         if not success then
             print("[RENDERER] Swapchain out of date! Rebuild required.")
         end
-        -- >>> END PATCH <<<
 
         cmd_factory.AdvanceFrame(cmd_state)
         frame_count = frame_count + 1
-
         coroutine.yield(function() return true end)
     end
     print("[LUA CO] Render Fiber Terminated. Frames: " .. tostring(frame_count))

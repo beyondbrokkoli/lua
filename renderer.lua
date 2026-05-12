@@ -147,21 +147,13 @@ function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current
     local imageAvailable = sync.imageAvailable[current_frame]
     local renderFinished = sync.renderFinished[current_frame]
 
-    -- IRON-CLAD 64-BIT MAX: Bypasses Lua float precision loss
+    -- [DELETED vkWaitForFences FROM HERE]
+
     local TIMEOUT_MAX = ffi.cast("uint64_t", -1)
-
-    -- GPU Lockstep: Wait for previous frame execution to finish
-    vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {inFlightFence}), 1, TIMEOUT_MAX)
-
-    -- Acquire Image
     local res = vk.vkAcquireNextImageKHR(device, swapchain.handle, TIMEOUT_MAX, imageAvailable, nil, f_state.pImageIndex)
+    if res ~= 0 and res ~= 1000001004 then return false end
 
-    -- Abort if the swapchain is dead (-1000001004) or completely unready
-    -- 0 = VK_SUCCESS, 1000001004 = VK_SUBOPTIMAL_KHR
-    if res ~= 0 and res ~= 1000001004 then
-        return false
-    end
-
+    -- Reset the fence ONLY AFTER we successfully acquire the image
     vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {inFlightFence}))
     vk.vkResetCommandBuffer(cmd_buffer, 0)
 
