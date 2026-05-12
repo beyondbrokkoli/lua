@@ -150,7 +150,7 @@ local function command_glfw_fiber()
 
     -- >>> NEW: RENDERER INITIALIZATION <<<
     local sync_state = renderer.InitSync(vk, device, 3)
-    local frame_state = renderer.AllocateFrameState(sc_state.extent.width, sc_state.extent.height)
+    local frame_state = renderer.AllocateFrameState(vk, device, sc_state.extent.width, sc_state.extent.height)
 
     start_fiber(function()
         render_fiber(vk, device, sc_state, vk_state.queue, cmd_state, sync_state, frame_state, memory.Buffers["MASTER_GPU_BLOCK"], comp_state, gfx_state)

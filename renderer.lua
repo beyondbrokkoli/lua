@@ -34,7 +34,7 @@ function Renderer.InitSync(vk, device, frames_in_flight)
 end
 
 -- ZERO GC MANDATE: Pre-allocate all frame structs here.
-function Renderer.AllocateFrameState(width, height)
+function Renderer.AllocateFrameState(vk, device, width, height)
     local state = {}
 
     -- Execution State
