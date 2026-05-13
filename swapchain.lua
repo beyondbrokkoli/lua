@@ -5,28 +5,30 @@ local Swapchain = {}
 function Swapchain.Init(vk, core_state, width, height)
     print("[SWAPCHAIN] Building the display chain...")
 
-    -- ========================================================
     -- 1. Query Surface Capabilities
-    -- ========================================================
     local surfaceCaps = ffi.new("VkSurfaceCapabilitiesKHR")
     vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(core_state.physicalDevice, core_state.surface, surfaceCaps)
 
-    -- ========================================================
-    -- 2. Create the Swapchain
-    -- ========================================================
+    -- VULKAN EXTENT CLAMP: Override requested size with true driver capabilities
+    local actualExtent = surfaceCaps.currentExtent
+    if actualExtent.width ~= 4294967295 then -- 0xFFFFFFFF
+        width = actualExtent.width
+        height = actualExtent.height
+    else
+        width = math.max(surfaceCaps.minImageExtent.width, math.min(surfaceCaps.maxImageExtent.width, width))
+        height = math.max(surfaceCaps.minImageExtent.height, math.min(surfaceCaps.maxImageExtent.height, height))
+    end
+
     local swapchainInfo = ffi.new("VkSwapchainCreateInfoKHR")
-    ffi.fill(swapchainInfo, ffi.sizeof(swapchainInfo)) -- ZERO GARBAGE MEMORY
-    
-    swapchainInfo.sType = 1000001000 -- VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR
+    ffi.fill(swapchainInfo, ffi.sizeof(swapchainInfo))
+    swapchainInfo.sType = 1000001000
     swapchainInfo.surface = core_state.surface
     swapchainInfo.minImageCount = surfaceCaps.minImageCount + 1
-    swapchainInfo.imageFormat = 50 -- VK_FORMAT_B8G8R8A8_SRGB
-    swapchainInfo.imageColorSpace = 0 -- VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
-    
-    -- Assign Extent manually from our Bridge width/height
-    swapchainInfo.imageExtent.width = width
-    swapchainInfo.imageExtent.height = height
-    
+    swapchainInfo.imageFormat = 50
+    swapchainInfo.imageColorSpace = 0
+    swapchainInfo.imageExtent.width = width     -- Now strictly validated
+    swapchainInfo.imageExtent.height = height   -- Now strictly validated
+
     swapchainInfo.imageArrayLayers = 1
     swapchainInfo.imageUsage = 16 -- VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
     swapchainInfo.preTransform = surfaceCaps.currentTransform
@@ -39,9 +41,8 @@ function Swapchain.Init(vk, core_state, width, height)
     assert(res == 0, "FATAL: Failed to create Swapchain! Error: " .. tonumber(res))
     local swapchain = pSwapchain[0]
 
-    -- ========================================================
+
     -- 3. Extract the Swapchain Images
-    -- ========================================================
     local pImageCount = ffi.new("uint32_t[1]")
     vk.vkGetSwapchainImagesKHR(core_state.device, swapchain, pImageCount, nil)
     local imageCount = pImageCount[0]
@@ -49,20 +50,18 @@ function Swapchain.Init(vk, core_state, width, height)
     local images = ffi.new("VkImage[?]", imageCount)
     vk.vkGetSwapchainImagesKHR(core_state.device, swapchain, pImageCount, images)
 
-    -- ========================================================
     -- 4. Create the Image Views
-    -- ========================================================
     local imageViews = ffi.new("VkImageView[?]", imageCount)
-    
+
     for i = 0, imageCount - 1 do
         local viewInfo = ffi.new("VkImageViewCreateInfo")
         ffi.fill(viewInfo, ffi.sizeof(viewInfo))
-        
+
         viewInfo.sType = 15 -- VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
         viewInfo.image = images[i]
         viewInfo.viewType = 1 -- VK_IMAGE_VIEW_TYPE_2D
         viewInfo.format = 50 -- VK_FORMAT_B8G8R8A8_SRGB
-        
+
         viewInfo.subresourceRange.aspectMask = 1 -- VK_IMAGE_ASPECT_COLOR_BIT
         viewInfo.subresourceRange.levelCount = 1
         viewInfo.subresourceRange.layerCount = 1
@@ -85,13 +84,13 @@ end
 function Swapchain.Destroy(vk, core_state, sc_state)
     print("[TEARDOWN] Destroying Swapchain & Image Views...")
     if not sc_state then return end
-    
+
     for i = 0, sc_state.imageCount - 1 do
         if sc_state.imageViews[i] ~= nil then
             vk.vkDestroyImageView(core_state.device, sc_state.imageViews[i], nil)
         end
     end
-    
+
     if sc_state.handle ~= nil then
         vk.vkDestroySwapchainKHR(core_state.device, sc_state.handle, nil)
     end

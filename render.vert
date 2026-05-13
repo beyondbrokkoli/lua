@@ -5,6 +5,7 @@ layout(std430, binding = 0) readonly buffer MegaBuffer {
 };
 
 layout(push_constant) uniform PushConstants {
+    mat4 viewProj;
     uint pos_x_idx;
     uint pos_y_idx;
     uint pos_z_idx;
@@ -12,12 +13,10 @@ layout(push_constant) uniform PushConstants {
     float dt;
 } pc;
 
-// --> NEW: Explicit output to Fragment Shader
 layout(location = 0) out vec4 fragColor;
 
 void main() {
     uint id = gl_VertexIndex;
-
     if (id >= pc.particle_count) {
         gl_Position = vec4(0.0, 0.0, 0.0, 0.0);
         return;
@@ -27,11 +26,10 @@ void main() {
     float y = data[pc.pos_y_idx + id];
     float z = data[pc.pos_z_idx + id];
 
-    vec2 screen_pos = vec2(x / 400.0, y / 400.0);
+    // STANDARD LEFT-MULTIPLY: Hardware-native math evaluation
+    gl_Position = pc.viewProj * vec4(x, y, z, 1.0);
+    gl_PointSize = 2.0;
 
-    gl_Position = vec4(screen_pos, 0.5, 1.0);
-    gl_PointSize = 2.0; 
-    
-    // --> NEW: Write out a default color to satisfy the Fragment Shader
-    fragColor = vec4(1.0, 1.0, 1.0, 1.0); 
+    float depth_intensity = clamp((z + 300.0) / 600.0, 0.2, 1.0);
+    fragColor = vec4(depth_intensity, depth_intensity * 0.8, 1.0, 1.0);
 }

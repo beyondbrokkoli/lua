@@ -1,13 +1,12 @@
 #version 460
 layout(local_size_x = 256) in;
 
-// Our Unified VRAM Arena
 layout(std430, binding = 0) buffer MegaBuffer {
     float data[];
 };
 
-// The 64-Byte Router Matrix
 layout(push_constant) uniform PushConstants {
+    mat4 viewProj;          // Ignored by compute, but required for alignment
     uint pos_x_idx;
     uint pos_y_idx;
     uint pos_z_idx;
@@ -15,7 +14,6 @@ layout(push_constant) uniform PushConstants {
     float dt;
 } pc;
 
-// A quick pseudo-random hash to scatter the particles
 float hash(uint n) {
     n = (n << 13U) ^ n;
     n = n * (n * n * 15731U + 789221U) + 1376312589U;
@@ -26,12 +24,15 @@ void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= pc.particle_count) return;
 
-    // Scatter in a 200x200x200 volume, pushed forward in the Z axis
-    float rx = (hash(id) - 0.5) * 200.0;
-    float ry = (hash(id + 1337) - 0.5) * 200.0;
-    float rz = (hash(id + 9001) - 0.5) * 200.0 + 200.0;
+    // Generate a 600-unit orbital disk
+    float radius = hash(id) * 300.0;
+    float y      = (hash(id + 1337) - 0.5) * 100.0; // Flattened Y-axis
 
-    data[pc.pos_x_idx + id] = rx;
-    data[pc.pos_y_idx + id] = ry;
-    data[pc.pos_z_idx + id] = rz;
+    // Integrate pc.dt for Kepler-style orbital velocity (inner particles move faster)
+    float angular_vel = 10.0 / (radius + 10.0);
+    float angle       = hash(id + 9001) * 6.28318 + (pc.dt * angular_vel);
+
+    data[pc.pos_x_idx + id] = cos(angle) * radius;
+    data[pc.pos_y_idx + id] = y;
+    data[pc.pos_z_idx + id] = sin(angle) * radius + 300.0; // Offset target +Z
 }
