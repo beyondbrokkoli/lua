@@ -14,10 +14,11 @@
 #include <lauxlib.h>
 
 #if defined(_WIN32)
-    #define EXPORT __declspec(dllexport)
+#define EXPORT __declspec(dllexport)
 #else
-    #define EXPORT __attribute__((visibility("default")))
+#define EXPORT __attribute__((visibility("default")))
 #endif
+
 #include <pthread.h>
 #include <unistd.h>
 #define SLEEP_MS(ms) usleep((ms) * 1000)
@@ -35,31 +36,24 @@ static vmath_thread_t vmath_thread_start(void* (*func)(void*), void* arg) {
 static void vmath_thread_join(vmath_thread_t thread) {
     pthread_join(thread, NULL);
 }
-// main.c - The Expanded Mailbox
-#define CMD_IDLE            0
-#define CMD_BOOT_WINDOW     1
-#define CMD_KILL_WINDOW     2
 
-// [- REPLACE -] IPC_Mailbox struct with new input fields
+#define CMD_IDLE 0
+#define CMD_BOOT_WINDOW 1
+#define CMD_KILL_WINDOW 2
+
 typedef struct {
     alignas(64) _Atomic int ready_index;
     _Atomic int is_running;
     _Atomic int lua_finished;
     _Atomic(void*) vk_instance;
     _Atomic(void*) vk_surface;
-
-    // --- Remote Control Hub ---
     _Atomic int glfw_cmd;
     _Atomic int glfw_arg_w;
     _Atomic int glfw_arg_h;
     _Atomic int last_key_pressed;
-
-    // --- NEW: Input State ---
     _Atomic uint32_t wasd_mask;
     _Atomic float mouse_dx;
     _Atomic float mouse_dy;
-
-    // --- NEW: Resize State ---
     _Atomic int window_resized;
     _Atomic int win_w;
     _Atomic int win_h;
@@ -76,7 +70,6 @@ static EngineState g_engine;
 EXPORT int vibe_get_is_running() { return atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_relaxed); }
 EXPORT void vibe_trigger_shutdown() { atomic_store_explicit(&g_engine.mailbox.is_running, 0, memory_order_release); }
 EXPORT void vibe_mark_lua_finished() { atomic_store_explicit(&g_engine.mailbox.lua_finished, 1, memory_order_release); }
-
 EXPORT const char** vibe_get_glfw_extensions(uint32_t* count) { return glfwGetRequiredInstanceExtensions(count); }
 EXPORT void vibe_publish_vk_instance(void* instance) { atomic_store_explicit(&g_engine.mailbox.vk_instance, instance, memory_order_release); }
 EXPORT void* vibe_get_vk_surface() { return atomic_load_explicit(&g_engine.mailbox.vk_surface, memory_order_acquire); }
@@ -93,9 +86,23 @@ EXPORT int vibe_get_last_key() {
 
 double last_mx = 0.0, last_my = 0.0;
 bool first_mouse = true;
+static bool s_mouse_captured = false;
 
 void glfw_cursor_callback(GLFWwindow* window, double xpos, double ypos) {
-    if (first_mouse) { last_mx = xpos; last_my = ypos; first_mouse = false; return; }
+    // 1. THE GATEKEEPER: If the mouse is free, swallow the movement
+    if (!s_mouse_captured) {
+        last_mx = xpos;
+        last_my = ypos;
+        return;
+    }
+    // 2. Prevent the massive "snap" on the first frame of capture
+    if (first_mouse) {
+        last_mx = xpos;
+        last_my = ypos;
+        first_mouse = false;
+        return;
+    }
+    // 3. Normal Delta Calculation
     float dx = (float)(xpos - last_mx);
     float dy = (float)(ypos - last_my);
     last_mx = xpos; last_my = ypos;
@@ -107,6 +114,15 @@ void glfw_cursor_callback(GLFWwindow* window, double xpos, double ypos) {
     while (!atomic_compare_exchange_weak_explicit(&g_engine.mailbox.mouse_dy, &current_dy, current_dy + dy, memory_order_release, memory_order_relaxed));
 }
 
+void glfw_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+        if (!s_mouse_captured) {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            s_mouse_captured = true;
+            first_mouse = true; // Reset mouse delta to prevent camera snapping
+        }
+    }
+}
 void glfw_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
     if (action == GLFW_PRESS || action == GLFW_RELEASE) {
         uint32_t bit = 0;
@@ -122,7 +138,14 @@ void glfw_key_callback(GLFWwindow* window, int key, int scancode, int action, in
         }
     }
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-        atomic_store_explicit(&g_engine.mailbox.last_key_pressed, GLFW_KEY_ESCAPE, memory_order_release);
+        if (s_mouse_captured) {
+            // Stage 1: Free the mouse
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            s_mouse_captured = false;
+        } else {
+            // Stage 2: Trigger Shutdown if mouse is already free
+            atomic_store_explicit(&g_engine.mailbox.last_key_pressed, GLFW_KEY_ESCAPE, memory_order_release);
+        }
     }
 }
 
@@ -165,6 +188,7 @@ EXPORT void vibe_inject_validation_layers(void* instance_ptr) {
         printf("[C-FATAL] Failed to setup debug messenger (VK_EXT_debug_utils not found).\n");
     }
 }
+
 EXPORT void vibe_eject_validation_layers(void* instance) {
     PFN_vkDestroyDebugUtilsMessengerEXT destroyFn =
         (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
@@ -177,7 +201,6 @@ EXPORT void vibe_eject_validation_layers(void* instance) {
     }
 }
 
-// [ANCHOR] Right below vibe_eject_validation_layers - [+ ADD +] new EXPORTs
 EXPORT uint32_t vibe_get_wasd() { return atomic_load_explicit(&g_engine.mailbox.wasd_mask, memory_order_acquire); }
 EXPORT float vibe_get_mouse_dx() { return atomic_exchange_explicit(&g_engine.mailbox.mouse_dx, 0.0f, memory_order_acquire); }
 EXPORT float vibe_get_mouse_dy() { return atomic_exchange_explicit(&g_engine.mailbox.mouse_dy, 0.0f, memory_order_acquire); }
@@ -188,13 +211,155 @@ EXPORT void vibe_get_window_size(int* w, int* h) {
 }
 
 void glfw_framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    // If the window is minimized, width/height will be 0. We ignore 0.
     if (width == 0 || height == 0) return;
-
     atomic_store_explicit(&g_engine.mailbox.win_w, width, memory_order_release);
     atomic_store_explicit(&g_engine.mailbox.win_h, height, memory_order_release);
     atomic_store_explicit(&g_engine.mailbox.window_resized, 1, memory_order_release);
 }
+
+// ==============================================================================
+// NATIVE C-CORE RENDER BINDINGS
+// ==============================================================================
+
+typedef struct {
+    float m[16];
+} mat4_t;
+
+typedef struct {
+    mat4_t viewProj;         // 64 bytes
+    uint32_t pos_x_idx;      // +4 = 68
+    uint32_t pos_y_idx;      // +4 = 72
+    uint32_t pos_z_idx;      // +4 = 76
+    uint32_t particle_count; // +4 = 80
+    float dt;                // +4 = 84
+    uint32_t _padding[11];   // +44 = 128 bytes
+} PushConstants;
+
+_Static_assert(sizeof(PushConstants) == 128, "PushConstants MUST be exactly 128 bytes!");
+
+typedef struct __attribute__((packed, aligned(16))) {
+    VkCommandBuffer cmd;
+    uint64_t comp_pipeline;
+    uint64_t comp_layout;
+    uint64_t gfx_pipeline;
+    uint64_t gfx_layout;
+    uint64_t desc_set;
+    uint64_t vertex_buffer;
+    uint64_t swapchain_image;
+    uint64_t swapchain_view;
+    uint64_t depth_image;
+    uint64_t depth_view;
+    uint32_t width;
+    uint32_t height;
+    PushConstants* pc; // <-- CHANGED TO POINTER!
+} RenderPacket;
+
+EXPORT void vibe_record_commands(RenderPacket* p, PFN_vkCmdBeginRenderingKHR pfnBegin, PFN_vkCmdEndRenderingKHR pfnEnd) {
+    VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    vkBeginCommandBuffer(p->cmd, &beginInfo);
+
+    // --- COMPUTE PASS ---
+    vkCmdBindPipeline(p->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipeline)p->comp_pipeline);
+
+    VkDescriptorSet dset = (VkDescriptorSet)p->desc_set;
+    vkCmdBindDescriptorSets(p->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->comp_layout, 0, 1, &dset, 0, NULL);
+
+    // Pass the pointer directly
+    vkCmdPushConstants(p->cmd, (VkPipelineLayout)p->comp_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), p->pc);
+
+    // Use -> operator to read particle_count
+    uint32_t workgroups = (p->pc->particle_count + 255) / 256;
+    vkCmdDispatch(p->cmd, workgroups, 1, 1);
+
+    VkMemoryBarrier compBarrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT
+    };
+    vkCmdPipelineBarrier(p->cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &compBarrier, 0, NULL, 0, NULL);
+
+    // --- GRAPHICS PASS ---
+    VkImageMemoryBarrier preBarriers[2] = {0};
+    preBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    preBarriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    preBarriers[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    preBarriers[0].image = (VkImage)p->swapchain_image;
+    preBarriers[0].subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    preBarriers[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    preBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    preBarriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    preBarriers[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    preBarriers[1].image = (VkImage)p->depth_image;
+    preBarriers[1].subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+    preBarriers[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    vkCmdPipelineBarrier(p->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, NULL, 0, NULL, 2, preBarriers);
+
+    VkRenderingAttachmentInfoKHR colorAttachment = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+        .imageView = (VkImageView)p->swapchain_view,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue.color = {{0.01f, 0.01f, 0.02f, 1.0f}}
+    };
+
+    VkRenderingAttachmentInfoKHR depthAttachment = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
+        .imageView = (VkImageView)p->depth_view,
+        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue.depthStencil = {0.0f, 0}
+    };
+
+    VkRenderingInfoKHR renderInfo = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
+        .renderArea.extent = {p->width, p->height},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &colorAttachment,
+        .pDepthAttachment = &depthAttachment
+    };
+
+    pfnBegin(p->cmd, &renderInfo);
+
+    vkCmdBindPipeline(p->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)p->gfx_pipeline);
+    vkCmdBindDescriptorSets(p->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipelineLayout)p->gfx_layout, 0, 1, &dset, 0, NULL);
+
+    VkViewport viewport = {0.0f, 0.0f, (float)p->width, (float)p->height, 0.0f, 1.0f};
+    VkRect2D scissor = {{0, 0}, {p->width, p->height}};
+    vkCmdSetViewport(p->cmd, 0, 1, &viewport);
+    vkCmdSetScissor(p->cmd, 0, 1, &scissor);
+
+    VkDeviceSize offset = 0;
+    VkBuffer vbo = (VkBuffer)p->vertex_buffer;
+    vkCmdBindVertexBuffers(p->cmd, 0, 1, &vbo, &offset);
+
+    // Pass the pointer directly
+    vkCmdPushConstants(p->cmd, (VkPipelineLayout)p->gfx_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), p->pc);
+
+    // Use -> operator to read particle_count
+    vkCmdDraw(p->cmd, p->pc->particle_count, 1, 0, 0);
+
+    pfnEnd(p->cmd);
+
+    VkImageMemoryBarrier presentBarrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .image = (VkImage)p->swapchain_image,
+        .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = 0
+    };
+    vkCmdPipelineBarrier(p->cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &presentBarrier);
+
+    vkEndCommandBuffer(p->cmd);
+}
+// ==============================================================================
+
 void vibe_init_mailbox() {
     atomic_init(&g_engine.mailbox.ready_index, 0);
     atomic_init(&g_engine.mailbox.is_running, 1);
@@ -221,26 +386,21 @@ int main(int argc, char** argv) {
     if (!glfwInit()) return -1;
     vibe_init_mailbox();
 
-    // Ensure new atomic fields start at 0
     atomic_init(&g_engine.mailbox.glfw_cmd, CMD_IDLE);
     atomic_init(&g_engine.mailbox.last_key_pressed, 0);
     atomic_init(&g_engine.mailbox.wasd_mask, 0);
     atomic_init(&g_engine.mailbox.mouse_dx, 0.0f);
     atomic_init(&g_engine.mailbox.mouse_dy, 0.0f);
 
-    // Spawn the Lua Overlord
     vmath_thread_t lua_thread = vmath_thread_start(lua_co_overlord_loop, NULL);
 
     GLFWwindow* window = NULL;
 
-    // The Subservient Polling Loop
     while (vibe_get_is_running()) {
         if (window) glfwPollEvents();
 
-        // 1. Read Lua's Command (and clear it back to IDLE instantly)
         int cmd = atomic_exchange_explicit(&g_engine.mailbox.glfw_cmd, CMD_IDLE, memory_order_acquire);
 
-        // 2. Execute Lua's Command
         if (cmd == CMD_BOOT_WINDOW && window == NULL) {
             int w = atomic_load_explicit(&g_engine.mailbox.glfw_arg_w, memory_order_relaxed);
             int h = atomic_load_explicit(&g_engine.mailbox.glfw_arg_h, memory_order_relaxed);
@@ -248,22 +408,25 @@ int main(int argc, char** argv) {
             glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
             glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
             window = glfwCreateWindow(w, h, "VibeEngine Remote", NULL, NULL);
-            // NATIVE OS CLAMP: Prevent crushing the window into invalid math ranges
             glfwSetWindowSizeLimits(window, 640, 360, GLFW_DONT_CARE, GLFW_DONT_CARE);
+
+            // --- THE WINDOWS FOCUS OVERRIDE HACK ---
+            glfwShowWindow(window);
+            glfwSetWindowAttrib(window, GLFW_FLOATING, GLFW_TRUE);  // Force OS to overlay it
+            glfwFocusWindow(window);                                // Grab the input lock
+            glfwSetWindowAttrib(window, GLFW_FLOATING, GLFW_FALSE); // Sink it back to normal
+            glfwPollEvents();                                       // Flush the OS event queue instantly
+
             glfwSetFramebufferSizeCallback(window, glfw_framebuffer_size_callback);
             glfwSetKeyCallback(window, glfw_key_callback);
-
             glfwSetCursorPosCallback(window, glfw_cursor_callback);
-            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            glfwSetMouseButtonCallback(window, glfw_mouse_button_callback);
 
-            // ---> THE FIX: Seed the mailbox with the initial framebuffer size! <---
             int fb_w, fb_h;
             glfwGetFramebufferSize(window, &fb_w, &fb_h);
             atomic_store_explicit(&g_engine.mailbox.win_w, fb_w, memory_order_release);
             atomic_store_explicit(&g_engine.mailbox.win_h, fb_h, memory_order_release);
-            // ----------------------------------------------------------------------
 
-            // Fetch the instance Lua already published
             void* instance = atomic_load_explicit(&g_engine.mailbox.vk_instance, memory_order_acquire);
             if (instance != NULL) {
                 VkSurfaceKHR surface;
@@ -276,19 +439,14 @@ int main(int argc, char** argv) {
         else if (cmd == CMD_KILL_WINDOW && window != NULL) {
             glfwDestroyWindow(window);
             window = NULL;
-            // Wipe the surface from the mailbox so Lua knows it's dead
             atomic_store_explicit(&g_engine.mailbox.vk_surface, NULL, memory_order_release);
             printf("[C-CORE] Window Destroyed. Running Headless...\n");
         }
 
-        // 3. Handle OS-level window close (the 'X' button)
         if (window && glfwWindowShouldClose(window)) {
-            // Instead of instantly dying, tell Lua to handle the teardown gracefully
             atomic_store_explicit(&g_engine.mailbox.last_key_pressed, GLFW_KEY_ESCAPE, memory_order_release);
-            glfwSetWindowShouldClose(window, GLFW_FALSE); // Prevent infinite loop
+            glfwSetWindowShouldClose(window, GLFW_FALSE);
         }
-
-        // SLEEP_MS(16); // Low-power sleep while we wait for orders
     }
 
     printf("\n[C-CORE] Shutdown triggered. Waiting for Lua VM...\n");

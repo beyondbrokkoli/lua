@@ -4,13 +4,14 @@ layout(std430, binding = 0) readonly buffer MegaBuffer {
     float data[];
 };
 
+// EXPLICIT MEMORY MAPPING: Matches the 128-byte C-struct perfectly
 layout(push_constant) uniform PushConstants {
-    mat4 viewProj;
-    uint pos_x_idx;
-    uint pos_y_idx;
-    uint pos_z_idx;
-    uint particle_count;
-    float dt;
+    layout(offset = 0)  mat4 viewProj;
+    layout(offset = 64) uint pos_x_idx;
+    layout(offset = 68) uint pos_y_idx;
+    layout(offset = 72) uint pos_z_idx;
+    layout(offset = 76) uint particle_count;
+    layout(offset = 80) float dt;
 } pc;
 
 layout(location = 0) out vec4 fragColor;

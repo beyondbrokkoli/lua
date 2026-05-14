@@ -37,7 +37,7 @@ function Descriptors.Init(vk, device, master_gpu_buffer)
     local pushRange = ffi.new("VkPushConstantRange[1]")
     pushRange[0].stageFlags = STAGE_ALL
     pushRange[0].offset = 0
-    pushRange[0].size = 84
+    pushRange[0].size = 128
 
     -- ========================================================
     -- 3. Pipeline Layout (Unified Router)

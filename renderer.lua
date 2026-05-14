@@ -11,7 +11,10 @@ ffi.cdef[[
     typedef PFN_vkCmdEndRendering PFN_vkCmdEndRenderingKHR;
 ]]
 local Renderer = {}
-
+Renderer.RenderMode = {
+    LUA_NATIVE = 0,
+    C_HOST = 1
+}
 function Renderer.InitSync(vk, device, frames_in_flight)
     print("[RENDERER] Forging Synchronization Primitives...")
 
@@ -76,7 +79,10 @@ function Renderer.AllocateFrameState(vk, device, width, height)
         dstAccessMask = 1024
     })
 
-    state.preBarriers = ffi.new("VkImageMemoryBarrier[2]", {state.colorBarrierIn, state.depthBarrierIn})
+    -- Explicitly allocate the array, then copy the structs by value
+    state.preBarriers = ffi.new("VkImageMemoryBarrier[2]")
+    state.preBarriers[0] = state.colorBarrierIn
+    state.preBarriers[1] = state.depthBarrierIn
 
     state.colorBarrierOut = ffi.new("VkImageMemoryBarrier", {
         sType = 45,
@@ -152,90 +158,171 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     state.pSwapchains = ffi.new("VkSwapchainKHR[1]")
     state.pSubmitInfos = ffi.new("VkSubmitInfo[1]")
 
+    -- 1. Slot the initialized structs into the FFI arrays
+    state.pComputeBarrierArr[0] = state.computeBarrier
+    state.pColorBarrierOutArr[0] = state.colorBarrierOut
+
+    -- 2. Cache Vulkan commands to bypass global table lookups
+    state.vkCmdBindPipeline = vk.vkCmdBindPipeline
+    state.vkCmdBindDescriptorSets = vk.vkCmdBindDescriptorSets
+    state.vkCmdPushConstants = vk.vkCmdPushConstants
+    state.vkCmdDispatch = vk.vkCmdDispatch
+    state.vkCmdPipelineBarrier = vk.vkCmdPipelineBarrier
+    state.vkCmdSetViewport = vk.vkCmdSetViewport
+    state.vkCmdSetScissor = vk.vkCmdSetScissor
+    state.vkCmdBindVertexBuffers = vk.vkCmdBindVertexBuffers
+    state.vkCmdDraw = vk.vkCmdDraw
+
     return state
 end
 
-function Renderer.ExecuteFrame(vk, device, queue, swapchain, cmd_buffer, current_frame, sync, f_state, unified_buffer, p_compute, p_gfx, pc_bytes, desc_state)
-    local inFlightFence = sync.inFlight[current_frame]
-    local imageAvailable = sync.imageAvailable[current_frame]
+local function DispatchCHost(packet, f_state)
+    ffi.C.vibe_record_commands(packet, f_state.vkCmdBeginRendering, f_state.vkCmdEndRendering)
+end
+
+local function DispatchLuaNative(vk, packet, f_state)
+    -- Begin Command Buffer
+    vk.vkBeginCommandBuffer(packet.cmd, f_state.cmdBeginInfo)
+
+    -- COMPUTE PASS
+    f_state.vkCmdBindPipeline(packet.cmd, 1, ffi.cast("VkPipeline", packet.comp_pipeline))
+
+    local dset = ffi.new("VkDescriptorSet[1]", ffi.cast("VkDescriptorSet", packet.desc_set))
+    f_state.vkCmdBindDescriptorSets(packet.cmd, 1, ffi.cast("VkPipelineLayout", packet.comp_layout), 0, 1, dset, 0, nil)
+
+    -- Push Constants FFI Passthrough (Preserves 128-byte alignment)
+    f_state.vkCmdPushConstants(packet.cmd, ffi.cast("VkPipelineLayout", packet.comp_layout),
+                          bit.bor(1, 32), -- VERTEX | COMPUTE
+                          0, 128, packet.pc)
+
+    local workgroups = math.ceil(packet.pc.particle_count / 256)
+    f_state.vkCmdDispatch(packet.cmd, workgroups, 1, 1)
+
+    -- Compute to Vertex Barrier
+    f_state.vkCmdPipelineBarrier(packet.cmd, 2048, 128, 0, 1, f_state.pComputeBarrierArr, 0, nil, 0, nil)
+
+    -- Pre-Rendering Image Barriers (Color & Depth)
+    f_state.preBarriers[0].image = ffi.cast("VkImage", packet.swapchain_image)
+    f_state.preBarriers[1].image = ffi.cast("VkImage", packet.depth_image)
+    f_state.vkCmdPipelineBarrier(packet.cmd, 1, bit.bor(256, 1024), 0, 0, nil, 0, nil, 2, f_state.preBarriers)
+
+    -- GRAPHICS PASS (Dynamic Rendering)
+    f_state.colorAttachment[0].imageView = ffi.cast("VkImageView", packet.swapchain_view)
+    f_state.depthAttachment[0].imageView = ffi.cast("VkImageView", packet.depth_view)
+
+    f_state.vkCmdBeginRendering(packet.cmd, f_state.renderInfo)
+
+    f_state.vkCmdBindPipeline(packet.cmd, 0, ffi.cast("VkPipeline", packet.gfx_pipeline))
+    f_state.vkCmdBindDescriptorSets(packet.cmd, 0, ffi.cast("VkPipelineLayout", packet.gfx_layout), 0, 1, dset, 0, nil)
+
+    f_state.vkCmdSetViewport(packet.cmd, 0, 1, f_state.viewport)
+    f_state.vkCmdSetScissor(packet.cmd, 0, 1, f_state.scissor)
+
+    local vbo = ffi.new("VkBuffer[1]", ffi.cast("VkBuffer", packet.vertex_buffer))
+    f_state.vkCmdBindVertexBuffers(packet.cmd, 0, 1, vbo, f_state.offsets)
+
+    f_state.vkCmdPushConstants(packet.cmd, ffi.cast("VkPipelineLayout", packet.gfx_layout), bit.bor(1, 32), 0, 128, packet.pc)
+
+    f_state.vkCmdDraw(packet.cmd, packet.pc.particle_count, 1, 0, 0)
+
+    f_state.vkCmdEndRendering(packet.cmd)
+
+    -- Present Image Barrier
+    -- 1. Explicitly update the array index, not the standalone struct!
+    f_state.pColorBarrierOutArr[0].image = ffi.cast("VkImage", packet.swapchain_image)
+
+    -- 2. Use 1024 (COLOR_ATTACHMENT_OUTPUT) instead of 256
+    f_state.vkCmdPipelineBarrier(packet.cmd, 1024, 4096, 0, 0, nil, 0, nil, 1, f_state.pColorBarrierOutArr)
+
+    vk.vkEndCommandBuffer(packet.cmd)
+end
+function Renderer.ExecuteFrame(
+    vk, device, queue, swapchain, cmd_buffer, current_frame,
+    sync_state, f_state, unified_buffer, p_compute, p_gfx, pc_bytes, desc_state,
+    render_mode -- [NEW PARAMETER]
+)
+    local inFlightFence = sync_state.inFlight[current_frame]
     local TIMEOUT_MAX = ffi.cast("uint64_t", -1)
+    vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {inFlightFence}), 1, TIMEOUT_MAX)
 
+    local imageAvailable = sync_state.imageAvailable[current_frame]
     local res = vk.vkAcquireNextImageKHR(device, swapchain.handle, TIMEOUT_MAX, imageAvailable, nil, f_state.pImageIndex)
-    if res ~= 0 and res ~= 1000001004 then return false end
 
-    f_state.pFence[0] = inFlightFence
-    vk.vkResetFences(device, 1, f_state.pFence)
+    if res == -1000001004 or res == 1000001003 then
+        return false
+    elseif res ~= 0 then
+        error("Failed to acquire swapchain image! Error: " .. tonumber(res))
+    end
 
-    vk.vkResetCommandBuffer(cmd_buffer, 0)
-    vk.vkBeginCommandBuffer(cmd_buffer, f_state.cmdBeginInfo)
-
-    -- COMPUTE
-    vk.vkCmdBindPipeline(cmd_buffer, 1, p_compute.pipeline)
-    f_state.pDescriptorSets[0] = desc_state.set0
-    vk.vkCmdBindDescriptorSets(cmd_buffer, 1, p_compute.pipelineLayout, 0, 1, f_state.pDescriptorSets, 0, nil)
-    vk.vkCmdPushConstants(cmd_buffer, desc_state.pipelineLayout, 33, 0, 84, pc_bytes)
-
-    local workgroups = math.ceil(pc_bytes.particle_count / 256)
-    vk.vkCmdDispatch(cmd_buffer, workgroups, 1, 1)
-
-    f_state.pComputeBarrierArr[0] = f_state.computeBarrier
-    vk.vkCmdPipelineBarrier(cmd_buffer, 2048, bit.bor(128, 65536), 0, 1, f_state.pComputeBarrierArr, 0, nil, 0, nil)
-
-    -- GRAPHICS PRE-BARRIERS
+    vk.vkResetFences(device, 1, ffi.new("VkFence[1]", {inFlightFence}))
     local imgIndex = f_state.pImageIndex[0]
-    f_state.preBarriers[0].image = swapchain.images[imgIndex]
-    f_state.preBarriers[1].image = p_gfx.depthImage
-    vk.vkCmdPipelineBarrier(cmd_buffer, 1, bit.bor(256, 1024), 0, 0, nil, 0, nil, 2, f_state.preBarriers)
 
-    -- RENDER PASS
-    f_state.colorAttachment[0].imageView = swapchain.imageViews[imgIndex]
-    f_state.depthAttachment[0].imageView = p_gfx.depthImageView
-    f_state.vkCmdBeginRendering(cmd_buffer, f_state.renderInfo)
+    -- 1. PACKET FORGE (SSOT)
+    local packet = ffi.new("RenderPacket")
+    packet.cmd = cmd_buffer
+    packet.comp_pipeline   = ffi.cast("uint64_t", p_compute.pipeline)
+    packet.comp_layout     = ffi.cast("uint64_t", p_compute.pipelineLayout)
+    packet.gfx_pipeline    = ffi.cast("uint64_t", p_gfx.pipeline)
+    packet.gfx_layout      = ffi.cast("uint64_t", p_gfx.pipelineLayout)
+    packet.desc_set        = ffi.cast("uint64_t", desc_state.set0)
+    packet.vertex_buffer   = ffi.cast("uint64_t", unified_buffer)
+    packet.swapchain_image = ffi.cast("uint64_t", swapchain.images[imgIndex])
+    packet.swapchain_view  = ffi.cast("uint64_t", swapchain.imageViews[imgIndex])
+    packet.depth_image     = ffi.cast("uint64_t", p_gfx.depthImage)
+    packet.depth_view      = ffi.cast("uint64_t", p_gfx.depthImageView)
+    packet.width  = swapchain.extent.width
+    packet.height = swapchain.extent.height
+    packet.pc = pc_bytes
 
-    vk.vkCmdBindPipeline(cmd_buffer, 0, p_gfx.pipeline)
-    f_state.pDescriptorSets[0] = desc_state.set0
-    vk.vkCmdBindDescriptorSets(cmd_buffer, 0, p_gfx.pipelineLayout, 0, 1, f_state.pDescriptorSets, 0, nil)
+    -- 2. DUAL-DISPATCH ROUTER
+    if render_mode == Renderer.RenderMode.C_HOST then
+        DispatchCHost(packet, f_state)
+    elseif render_mode == Renderer.RenderMode.LUA_NATIVE then
+        DispatchLuaNative(vk, packet, f_state)
+    else
+        error("FATAL: Invalid RenderMode specified.")
+    end
 
-    vk.vkCmdSetViewport(cmd_buffer, 0, 1, f_state.viewport)
-    vk.vkCmdSetScissor(cmd_buffer, 0, 1, f_state.scissor)
+    -- 3. QUEUE SUBMIT
+    local renderFinished = sync_state.renderFinished[current_frame]
 
-    f_state.pVertexBuffers[0] = unified_buffer
-    vk.vkCmdBindVertexBuffers(cmd_buffer, 0, 1, f_state.pVertexBuffers, f_state.offsets)
-    vk.vkCmdPushConstants(cmd_buffer, p_gfx.pipelineLayout, 33, 0, 84, pc_bytes)
-    vk.vkCmdDraw(cmd_buffer, pc_bytes.particle_count, 1, 0, 0)
+    local waitSemaphores   = ffi.new("VkSemaphore[1]", { imageAvailable })
+    local waitStages       = ffi.new("VkPipelineStageFlags[1]", { 1024 })
+    local signalSemaphores = ffi.new("VkSemaphore[1]", { renderFinished })
+    local submitCmds       = ffi.new("VkCommandBuffer[1]", { cmd_buffer })
 
-    f_state.vkCmdEndRendering(cmd_buffer)
+    local submitInfo = ffi.new("VkSubmitInfo[1]")
+    submitInfo[0].sType                = 4
+    submitInfo[0].waitSemaphoreCount   = 1
+    submitInfo[0].pWaitSemaphores      = waitSemaphores
+    submitInfo[0].pWaitDstStageMask    = waitStages
+    submitInfo[0].commandBufferCount   = 1
+    submitInfo[0].pCommandBuffers      = submitCmds
+    submitInfo[0].signalSemaphoreCount = 1
+    submitInfo[0].pSignalSemaphores    = signalSemaphores
 
-    -- GRAPHICS POST-BARRIER
-    f_state.colorBarrierOut.image = swapchain.images[imgIndex]
-    f_state.pColorBarrierOutArr[0] = f_state.colorBarrierOut
-    vk.vkCmdPipelineBarrier(cmd_buffer, 1024, 8192, 0, 0, nil, 0, nil, 1, f_state.pColorBarrierOutArr)
+    local submitRes = vk.vkQueueSubmit(queue, 1, submitInfo, inFlightFence)
+    assert(submitRes == 0, "Failed to submit draw command buffer!")
 
-    vk.vkEndCommandBuffer(cmd_buffer)
+    -- 4. PRESENT
+    local swapchains = ffi.new("VkSwapchainKHR[1]", { swapchain.handle })
+    local imgIndices = ffi.new("uint32_t[1]", { imgIndex })
 
-    -- SUBMIT
-    local renderFinished = sync.renderFinished[imgIndex]
-    f_state.cmdPtr[0] = cmd_buffer
+    local presentInfo = ffi.new("VkPresentInfoKHR[1]")
+    presentInfo[0].sType              = 1000001001
+    presentInfo[0].waitSemaphoreCount = 1
+    presentInfo[0].pWaitSemaphores    = signalSemaphores
+    presentInfo[0].swapchainCount     = 1
+    presentInfo[0].pSwapchains        = swapchains
+    presentInfo[0].pImageIndices      = imgIndices
 
-    f_state.pWaitSemaphoreSubmit[0] = imageAvailable
-    f_state.submitInfo.pWaitSemaphores = f_state.pWaitSemaphoreSubmit
-    f_state.submitInfo.pCommandBuffers = f_state.cmdPtr
+    res = vk.vkQueuePresentKHR(queue, presentInfo)
 
-    f_state.pSignalSemaphoreSubmit[0] = renderFinished
-    f_state.submitInfo.pSignalSemaphores = f_state.pSignalSemaphoreSubmit
-
-    f_state.pSubmitInfos[0] = f_state.submitInfo
-    vk.vkQueueSubmit(queue, 1, f_state.pSubmitInfos, inFlightFence)
-
-    -- PRESENT
-    f_state.pWaitSemaphorePresent[0] = renderFinished
-    f_state.presentInfo.pWaitSemaphores = f_state.pWaitSemaphorePresent
-
-    f_state.pSwapchains[0] = swapchain.handle
-    f_state.presentInfo.pSwapchains = f_state.pSwapchains
-    f_state.presentInfo.pImageIndices = f_state.pImageIndex
-
-    vk.vkQueuePresentKHR(queue, f_state.presentInfo)
+    if res == -1000001004 or res == 1000001003 then
+        return false
+    elseif res ~= 0 then
+        error("Failed to present swapchain image! Error: " .. tonumber(res))
+    end
 
     return true
 end

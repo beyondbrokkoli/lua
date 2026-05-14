@@ -27,14 +27,36 @@ ffi.cdef[[
     float vibe_get_mouse_dy();
     int vibe_get_resize_flag();
     void vibe_get_window_size(int* w, int* h);
+
+    // EXACTLY 128 BYTES: Zero compiler guesswork
     typedef struct {
-        mat4_t viewProj;     // Offset 0
-        uint32_t pos_x_idx;     // Offset 64 (4 bytes)
-        uint32_t pos_y_idx;     // Offset 68 (4 bytes)
-        uint32_t pos_z_idx;     // Offset 72 (4 bytes)
-        uint32_t particle_count;// Offset 76 (4 bytes)
-        float dt;               // Offset 80 (4 bytes)
-    } PushConstants;            // Total: 84 bytes (Well under 128B minimum max)
+        mat4_t viewProj;         // Offset 0  (64 bytes)
+        uint32_t pos_x_idx;      // Offset 64 (4 bytes)
+        uint32_t pos_y_idx;      // Offset 68 (4 bytes)
+        uint32_t pos_z_idx;      // Offset 72 (4 bytes)
+        uint32_t particle_count; // Offset 76 (4 bytes)
+        float dt;                // Offset 80 (4 bytes)
+        uint32_t _padding[11];   // Offset 84 (44 bytes explicit padding)
+    } PushConstants;             // Total: 128 bytes
+
+    typedef struct __attribute__((packed, aligned(16))) {
+        void* cmd;
+        uint64_t comp_pipeline;
+        uint64_t comp_layout;
+        uint64_t gfx_pipeline;
+        uint64_t gfx_layout;
+        uint64_t desc_set;
+        uint64_t vertex_buffer;
+        uint64_t swapchain_image;
+        uint64_t swapchain_view;
+        uint64_t depth_image;
+        uint64_t depth_view;
+        uint32_t width;
+        uint32_t height;
+        PushConstants* pc;
+    } RenderPacket;
+
+    void vibe_record_commands(RenderPacket* p, void* pfnBegin, void* pfnEnd);
 ]]
 
 local active_coroutines = {}
@@ -152,9 +174,7 @@ local function render_fiber(vk, vk_state, sc_state, cmd_state, sync_state, frame
                 is_resizing = false
             end
         else
-            -- ==========================================================
             -- 1. NORMAL FRAME RENDER (Skipped if Resizing)
-            -- ==========================================================
             local inFlightFence = sync_state.inFlight[cmd_state.current_frame]
             local TIMEOUT_MAX = ffi.cast("uint64_t", -1)
             vk.vkWaitForFences(device, 1, ffi.new("VkFence[1]", {inFlightFence}), 1, TIMEOUT_MAX)
@@ -195,9 +215,10 @@ local function render_fiber(vk, vk_state, sc_state, cmd_state, sync_state, frame
             local success = renderer.ExecuteFrame(
                 vk, device, queue, sc_state, cmd_buffer,
                 cmd_state.current_frame, sync_state, frame_state,
-                master_buf, comp_state, gfx_state, pc, desc_state
+                master_buf, comp_state, gfx_state, pc, desc_state,
+                -- renderer.RenderMode.LUA_NATIVE  -- <-- Swap this to C_HOST whenever you want!
+                renderer.RenderMode.C_HOST
             )
-
             -- If Vulkan natively flags a resize (e.g. Windows snapped the window), trigger the cooldown
             if not success then
                 print("[RENDERER] VK_ERROR_OUT_OF_DATE_KHR Triggered! Forcing Rebuild Protocol.")
