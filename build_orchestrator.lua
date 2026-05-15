@@ -24,6 +24,12 @@ local function copy_file(source, destination)
     return true
 end
 
+-- Safe OS execute wrapper to prevent swallowing errors in Lua 5.1 vs 5.4
+local function run_cmd(cmd)
+    local res = os.execute(cmd)
+    return (res == true or res == 0)
+end
+
 local function compile_engine(platform)
     print("========================================")
     print("   VULKAN ENGINE BUILD ORCHESTRATOR")
@@ -40,42 +46,46 @@ local function compile_engine(platform)
         os.execute("glslc swarm.comp -o swarm_comp.spv")
 
         print("\n[2/3] Compiling libvibemath.so (AVX2 Worker Pool) ...")
-        -- Fix: Typo removed. Added -lm to ensure fast_sin/cos fallback links correctly.
         local linux_build_vibemath = "gcc -O3 -march=x86-64-v3 -shared -fPIC -pthread vibemath.c -o libvibemath.so -lm"
-        local res_math = os.execute(linux_build_vibemath)
-        if res_math ~= 0 then print("ERROR: vibemath compilation failed!") os.exit(1) end
+        if not run_cmd(linux_build_vibemath) then 
+            print("ERROR: vibemath compilation failed!") 
+            os.exit(1) 
+        end
 
-        print("\n[3/3] Compiling boot (Vulkan/LuaJIT Host) ...")
+        print("\n[3/3] Compiling Vulkan-Engine (Monolithic AVX2 Host) ...")
         local linux_build_main = "gcc main.c -O3 -march=x86-64-v3 -Wl,-E -I/usr/include/luajit-2.1 -lglfw -lvulkan -lluajit-5.1 -lm -lpthread -o boot"
-        local res_main = os.execute(linux_build_main)
-        if res_main ~= 0 then print("ERROR: main compilation failed!") os.exit(1) end
+        if not run_cmd(linux_build_main) then 
+            print("ERROR: main.c compilation failed!") 
+            os.exit(1) 
+        end
 
     elseif platform == "win" then
         -- ==========================================
-        -- WINDOWS BUILD PIPELINE (MSYS2 MinGW64)
+        -- WINDOWS BUILD PIPELINE
         -- ==========================================
         print("\n[1/4] Compiling SPIR-V Shaders...")
         local glslc = VULKAN_SDK_PATH .. "/Bin/glslc.exe"
         os.execute(glslc .. " render.vert -o render_vert.spv")
         os.execute(glslc .. " render.frag -o render_frag.spv")
-        os.execute(glslc .. " swarm.comp -o swarm_comp.spv") -- Fix: Added glslc path here too
-
-        -- Define the MSYS2 LuaJIT include path
-        local LUA_INC = "C:/msys64/mingw64/include/luajit-2.1"
+        os.execute(glslc .. " swarm.comp -o swarm_comp.spv")
 
         print("\n[2/4] Compiling vibemath.dll (AVX2 Worker Pool) ...")
-        -- Windows gcc doesn't strictly need -fPIC, but requires -shared to hook the __declspec(dllexport)
         local win_build_vibemath = "gcc -O3 -march=x86-64-v3 -shared -pthread vibemath.c -o vibemath.dll -lm"
-        local res_math = os.execute(win_build_vibemath)
-        if res_math ~= 0 then print("ERROR: vibemath.dll compilation failed!") os.exit(1) end
+        if not run_cmd(win_build_vibemath) then 
+            print("ERROR: vibemath.dll compilation failed!") 
+            os.exit(1) 
+        end
 
-        print("\n[3/4] Compiling boot.exe (Vulkan/LuaJIT Host) ...")
+        print("\n[3/4] Compiling Vulkan-Engine.exe (Monolithic AVX2 Host) ...")
+        local LUA_INC = "C:/msys64/mingw64/include/luajit-2.1"
         local win_build_main = string.format(
             'gcc main.c -O3 -march=x86-64-v3 -I"%s" -I"%s/Include" -L"%s/Lib" -lws2_32 -lglfw3 -lvulkan-1 -lluajit-5.1 -lm -o boot.exe',
             LUA_INC, VULKAN_SDK_PATH, VULKAN_SDK_PATH
         )
-        local res_main = os.execute(win_build_main)
-        if res_main ~= 0 then print("ERROR: boot.exe compilation failed!") os.exit(1) end
+        if not run_cmd(win_build_main) then 
+            print("ERROR: boot.exe compilation failed!") 
+            os.exit(1) 
+        end
 
         -- ==========================================
         -- AUTOMATIC DEPENDENCY PACKING
@@ -171,8 +181,6 @@ end
 -- EXECUTION
 -- ==========================================================
 
--- Grab the first argument passed to the script (e.g., lua build.lua linux)
--- Default to "linux" if the user forgets to type it.
 local target_platform = arg[1] or "linux"
 
 compile_engine(target_platform)
@@ -180,8 +188,8 @@ compile_engine(target_platform)
 print("\n--- AI SNAPSHOT ---")
 local order = get_sorted_files()
 
--- Explicitly add C backend to the snapshot since require() won't find it
---table.insert(order, "main.c")
+-- Explicitly add C backends to the snapshot since require() won't find them
+table.insert(order, "main.c")
 table.insert(order, "vibemath.c")
 
 for _, src in ipairs(order) do
@@ -196,7 +204,7 @@ for _, src in ipairs(order) do
             minified_content = minify_lua(content)
         end
 
-        print("@@@ FILE: " .. src .. " @@@\n" .. minified_content)
+--        print("@@@ FILE: " .. src .. " @@@\n" .. minified_content)
         f:close()
     end
 end

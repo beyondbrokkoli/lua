@@ -1,6 +1,5 @@
 local ffi = require("ffi")
 local bit = require("bit")
-local cmd_factory = require("command_factory")
 local math = require("math")
 
 -- ALIAS BRIDGE: Map KHR extension names to Core 1.3 definitions from parse.py
@@ -176,16 +175,17 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     return state
 end
 
-function Renderer.ExecuteFrame(swapchain, unified_buffer, p_compute, p_gfx, pc_bytes, desc_state)
+function Renderer.ExecuteFrame(swapchain, unified_buffer, index_buffer, p_compute, p_gfx, pc_bytes, desc_state)
     local write_idx = ffi.C.vibe_ring_get_write_idx()
     local packet = ffi.C.vibe_ring_get_packet(write_idx)
 
-    packet.comp_pipeline = ffi.cast("uint64_t", p_compute.pipeline)
-    packet.comp_layout   = ffi.cast("uint64_t", p_compute.pipelineLayout)
+    packet.comp_pipeline = 0
+    packet.comp_layout   = 0
     packet.gfx_pipeline  = ffi.cast("uint64_t", p_gfx.pipeline)
     packet.gfx_layout    = ffi.cast("uint64_t", p_gfx.pipelineLayout)
     packet.desc_set      = ffi.cast("uint64_t", desc_state.set0)
     packet.vertex_buffer = ffi.cast("uint64_t", unified_buffer)
+    packet.index_buffer  = ffi.cast("uint64_t", index_buffer)
     packet.depth_image   = ffi.cast("uint64_t", p_gfx.depthImage)
     packet.depth_view    = ffi.cast("uint64_t", p_gfx.depthImageView)
     packet.width         = swapchain.extent.width
@@ -210,33 +210,6 @@ function Renderer.Destroy(vk, device, sync, frames_in_flight)
     for i = 0, frames_in_flight - 1 do
         vk.vkDestroyFence(device, sync.inFlight[i], nil)
     end
-end
-
-function Renderer.SubmitHostToDeviceBarrier(vk, device, queue, cmd_state, master_buffer)
-    print("[RENDERER] Executing Host-to-Device Memory Barrier...")
-    local cmd_buffer = cmd_factory.AllocateBuffer(vk, device, cmd_state)
-    local beginInfo = ffi.new("VkCommandBufferBeginInfo", {
-        sType = 42,
-        flags = 1 -- VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
-    })
-    vk.vkBeginCommandBuffer(cmd_buffer, beginInfo)
-
-    local barrier = ffi.new("VkMemoryBarrier[1]")
-    barrier[0].sType = 46
-    barrier[0].srcAccessMask = 16384 -- VK_ACCESS_HOST_WRITE_BIT
-    barrier[0].dstAccessMask = bit.bor(32, 4) -- VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT
-
-    vk.vkCmdPipelineBarrier(cmd_buffer, 16384, bit.bor(2048, 4), 0, 1, barrier, 0, nil, 0, nil)
-    vk.vkEndCommandBuffer(cmd_buffer)
-
-    local submitInfo = ffi.new("VkSubmitInfo[1]")
-    submitInfo[0].sType = 4
-    submitInfo[0].commandBufferCount = 1
-    submitInfo[0].pCommandBuffers = ffi.new("VkCommandBuffer[1]", {cmd_buffer})
-
-    vk.vkQueueSubmit(queue, 1, submitInfo, nil)
-    vk.vkQueueWaitIdle(queue)
-    print("[RENDERER] VRAM Coherency Secured.")
 end
 
 return Renderer

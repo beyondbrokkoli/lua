@@ -1,16 +1,10 @@
 local ffi = require("ffi")
 local bit = require("bit")
 
-ffi.cdef[[
-    void* aligned_alloc(size_t alignment, size_t size);
-    void free(void* ptr);
-]]
-
 local Memory = {
     Buffers = {},
     DeviceMemory = {},
-    Mapped = {},
-    AVX_Arrays = {}
+    Mapped = {}
 }
 
 local function FindSmartBufferMemory(vk, physicalDevice, typeFilter)
@@ -18,7 +12,7 @@ local function FindSmartBufferMemory(vk, physicalDevice, typeFilter)
     vk.vkGetPhysicalDeviceMemoryProperties(physicalDevice, memProperties)
 
     -- Prioritize Host Visible + Coherent + Local (ReBAR)
-    local rebarFlags = bit.bor(1, 2, 4) -- VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | HOST_VISIBLE | HOST_COHERENT
+    local rebarFlags = bit.bor(1, 2, 4) 
     for i = 0, memProperties.memoryTypeCount - 1 do
         if bit.band(typeFilter, bit.lshift(1, i)) ~= 0 and bit.band(memProperties.memoryTypes[i].propertyFlags, rebarFlags) == rebarFlags then
             print("[MEMORY] ReBAR Supported! Streaming directly to VRAM.")
@@ -26,11 +20,15 @@ local function FindSmartBufferMemory(vk, physicalDevice, typeFilter)
         end
     end
 
-    -- Fallback: Host Visible + Coherent (Standard System RAM)
+    -- Fallback: Force Write-Combining (Reject HOST_CACHED_BIT)
     local stdFlags = bit.bor(2, 4)
+    local cachedFlag = 8 
     for i = 0, memProperties.memoryTypeCount - 1 do
-        if bit.band(typeFilter, bit.lshift(1, i)) ~= 0 and bit.band(memProperties.memoryTypes[i].propertyFlags, stdFlags) == stdFlags then
-            print("[MEMORY] ReBAR NOT found. Falling back to System RAM.")
+        local flags = memProperties.memoryTypes[i].propertyFlags
+        local has_std = bit.band(flags, stdFlags) == stdFlags
+        local not_cached = bit.band(flags, cachedFlag) == 0
+        if bit.band(typeFilter, bit.lshift(1, i)) ~= 0 and has_std and not_cached then
+            print("[MEMORY] ReBAR NOT found. Falling back to System RAM (Write-Combining).")
             return i
         end
     end
@@ -42,10 +40,7 @@ function Memory.CreateHostVisibleBuffer(name, cdef_type, element_count, usage_fl
     local byte_size = ffi.sizeof(cdef_type) * element_count
 
     local bufInfo = ffi.new("VkBufferCreateInfo", {
-        sType = 12, -- VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
-        size = byte_size,
-        usage = usage_flags,
-        sharingMode = 0 -- VK_SHARING_MODE_EXCLUSIVE
+        sType = 12, size = byte_size, usage = usage_flags, sharingMode = 0
     })
 
     local pBuffer = ffi.new("VkBuffer[1]")
@@ -56,8 +51,7 @@ function Memory.CreateHostVisibleBuffer(name, cdef_type, element_count, usage_fl
     vk.vkGetBufferMemoryRequirements(core_state.device, Memory.Buffers[name], memReqs)
 
     local allocInfo = ffi.new("VkMemoryAllocateInfo", {
-        sType = 5, -- VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
-        allocationSize = memReqs.size,
+        sType = 5, allocationSize = memReqs.size,
         memoryTypeIndex = FindSmartBufferMemory(vk, core_state.physicalDevice, memReqs.memoryTypeBits)
     })
 
@@ -69,31 +63,14 @@ function Memory.CreateHostVisibleBuffer(name, cdef_type, element_count, usage_fl
 
     local ppData = ffi.new("void*[1]")
     assert(vk.vkMapMemory(core_state.device, Memory.DeviceMemory[name], 0, byte_size, 0, ppData) == 0)
+
+    -- === AVX2 ALIGNMENT GUARANTEE ===
+    local ptr_addr = tonumber(ffi.cast("uint64_t", ppData[0]))
+    assert(bit.band(ptr_addr, 31) == 0, "FATAL: Vulkan memory is not 32-byte aligned.")
+    -- ================================
+
     Memory.Mapped[name] = ffi.cast(cdef_type .. "*", ppData[0])
-
     print(string.format("[MEMORY] Allocated & Mapped VRAM Buffer: %s (%.2f MB)", name, byte_size / (1024*1024)))
-end
-
-function Memory.AllocateSoA(type_str, count, names)
-    local base_type = string.gsub(type_str, "%[.-%]", "")
-    local byte_size = ffi.sizeof(base_type) * count
-
-    for i = 1, #names do
-        local raw_ptr = ffi.C.aligned_alloc(64, byte_size)
-        assert(raw_ptr ~= nil, "FATAL: C-Allocator failed to provide aligned memory!")
-        Memory.AVX_Arrays[names[i]] = ffi.cast(base_type .. "*", raw_ptr)
-        print(string.format("[MEMORY] Allocated Pure AVX2 SoA: %s (%.2f MB)", names[i], byte_size / (1024*1024)))
-    end
-end
-
-function Memory.FreeSoA(names)
-    for i = 1, #names do
-        local ptr = Memory.AVX_Arrays[names[i]]
-        if ptr then
-            ffi.C.free(ptr)
-            Memory.AVX_Arrays[names[i]] = nil
-        end
-    end
 end
 
 function Memory.DestroyBuffer(name, core_state)

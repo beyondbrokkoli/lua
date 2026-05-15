@@ -133,7 +133,8 @@ function GraphicsPipeline.Init(vk, core_state, width, height, pipelineLayout, co
     local inputAssembly = ffi.new("VkPipelineInputAssemblyStateCreateInfo")
     ffi.fill(inputAssembly, ffi.sizeof(inputAssembly))
     inputAssembly.sType = 20
-    inputAssembly.topology = 0 -- VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+    -- inputAssembly.topology = 0 -- VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+    inputAssembly.topology = 3  -- VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
 
     local viewportState = ffi.new("VkPipelineViewportStateCreateInfo")
     ffi.fill(viewportState, ffi.sizeof(viewportState))
@@ -146,7 +147,7 @@ function GraphicsPipeline.Init(vk, core_state, width, height, pipelineLayout, co
     rasterizer.sType = 23
     rasterizer.polygonMode = 0 -- VK_POLYGON_MODE_FILL
     rasterizer.lineWidth = 1.0
-    rasterizer.cullMode = 0
+    rasterizer.cullMode = 1
     rasterizer.frontFace = 0 -- VK_FRONT_FACE_COUNTER_CLOCKWISE
 
     local multisampling = ffi.new("VkPipelineMultisampleStateCreateInfo")

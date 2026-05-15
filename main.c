@@ -26,7 +26,11 @@
 typedef pthread_t vmath_thread_t;
 #define THREAD_FUNC void*
 #define THREAD_RETURN_VAL NULL
-
+#if defined(_WIN32) || defined(_WIN64)
+    #include <windows.h>
+    #include <timeapi.h>
+    #pragma comment(lib, "winmm.lib")
+#endif
 static vmath_thread_t vmath_thread_start(void* (*func)(void*), void* arg) {
     pthread_t thread;
     pthread_create(&thread, NULL, func, arg);
@@ -257,13 +261,13 @@ typedef struct {
 } RenderThreadInit;
 
 typedef struct __attribute__((packed, aligned(64))) {
-    // REMOVED: void* cmd
     uint64_t comp_pipeline;
     uint64_t comp_layout;
     uint64_t gfx_pipeline;
     uint64_t gfx_layout;
     uint64_t desc_set;
     uint64_t vertex_buffer;
+    uint64_t index_buffer;     // Added
     uint64_t swapchain_image;
     uint64_t swapchain_view;
     uint64_t depth_image;
@@ -271,7 +275,7 @@ typedef struct __attribute__((packed, aligned(64))) {
     uint32_t width;
     uint32_t height;
     uint8_t pc_payload[128];
-    uint8_t _padding[64]; // Padded to exactly 256 bytes for L1 Cache Isolation
+    uint8_t _padding[32];      // Adjusted to maintain 256-byte alignment
 } RenderPacket;
 
 // The Triad Topology
@@ -290,6 +294,10 @@ static atomic_int g_render_thread_active = 0;
 
 EXPORT void vibe_ring_init_wsi(RenderThreadInit* wsi) {
     g_wsi = *wsi;
+
+    // Purge stale packets across WSI rebuilds
+    atomic_store_explicit(&g_ring.ready_idx, -1, memory_order_release);
+    atomic_store_explicit(&g_ring.read_idx, -1, memory_order_release);
 }
 
 EXPORT RenderPacket* vibe_ring_get_packet(int idx) {
@@ -310,35 +318,11 @@ EXPORT int vibe_ring_get_write_idx() {
 EXPORT void vibe_ring_submit(int idx) {
     atomic_store_explicit(&g_ring.ready_idx, idx, memory_order_release);
 }
-// [PATCHED] Signature now takes VkCommandBuffer directly
 EXPORT void vibe_record_commands(VkCommandBuffer cmd, RenderPacket* p, PFN_vkCmdBeginRenderingKHR pfnBegin, PFN_vkCmdEndRenderingKHR pfnEnd) {
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     vkBeginCommandBuffer(cmd, &beginInfo);
-
-    // 1. The Decoding Template: Cast the raw payload to read particle_count safely
     PushConstants* local_pc = (PushConstants*)p->pc_payload;
 
-    // --- COMPUTE PASS ---
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipeline)p->comp_pipeline);
-
-    VkDescriptorSet dset = (VkDescriptorSet)p->desc_set;
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->comp_layout, 0, 1, &dset, 0, NULL);
-
-    // 2. Push the raw byte array
-    vkCmdPushConstants(cmd, (VkPipelineLayout)p->comp_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, 0, 128, p->pc_payload);
-
-    // 3. Read from the local cast
-    uint32_t workgroups = (local_pc->particle_count + 255) / 256;
-    vkCmdDispatch(cmd, workgroups, 1, 1);
-
-    VkMemoryBarrier compBarrier = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT
-    };
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &compBarrier, 0, NULL, 0, NULL);
-
-    // --- GRAPHICS PASS ---
     VkImageMemoryBarrier preBarriers[2] = {0};
     preBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     preBarriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -386,6 +370,7 @@ EXPORT void vibe_record_commands(VkCommandBuffer cmd, RenderPacket* p, PFN_vkCmd
     pfnBegin(cmd, &renderInfo);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)p->gfx_pipeline);
+    VkDescriptorSet dset = (VkDescriptorSet)p->desc_set;
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipelineLayout)p->gfx_layout, 0, 1, &dset, 0, NULL);
 
     VkViewport viewport = {0.0f, 0.0f, (float)p->width, (float)p->height, 0.0f, 1.0f};
@@ -397,11 +382,15 @@ EXPORT void vibe_record_commands(VkCommandBuffer cmd, RenderPacket* p, PFN_vkCmd
     VkBuffer vbo = (VkBuffer)p->vertex_buffer;
     vkCmdBindVertexBuffers(cmd, 0, 1, &vbo, &offset);
 
-    // 4. Push the raw byte array
-    vkCmdPushConstants(cmd, (VkPipelineLayout)p->gfx_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, 0, 128, p->pc_payload);
+    vkCmdPushConstants(cmd, (VkPipelineLayout)p->gfx_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 128, p->pc_payload);
 
-    // 5. Draw using the local cast
-    vkCmdDraw(cmd, local_pc->particle_count, 1, 0, 0);
+    if (p->index_buffer != 0) {
+        VkBuffer ibo = (VkBuffer)p->index_buffer;
+        vkCmdBindIndexBuffer(cmd, ibo, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, local_pc->particle_count * 12, 1, 0, 0, 0);
+    } else {
+        vkCmdDraw(cmd, local_pc->particle_count, 1, 0, 0);
+    }
 
     pfnEnd(cmd);
 
@@ -454,6 +443,7 @@ THREAD_FUNC render_thread_loop(void* arg) {
         // 2. Triad Consumer Handoff
         int ready = atomic_load_explicit(&g_ring.ready_idx, memory_order_acquire);
         if (ready == -1 || ready == local_read) {
+            SLEEP_MS(1);
             continue; // Spinlock: Lua hasn't finished a new frame yet
         }
         local_read = ready;
@@ -471,6 +461,7 @@ THREAD_FUNC render_thread_loop(void* arg) {
 
         if (res == VK_ERROR_OUT_OF_DATE_KHR) {
             atomic_store_explicit(&g_engine.mailbox.window_resized, 1, memory_order_release);
+            SLEEP_MS(10);
             continue;
         }
         pfnReset(g_wsi.device, 1, &g_wsi.in_flight[current_frame]);
@@ -609,6 +600,7 @@ int main(int argc, char** argv) {
             atomic_store_explicit(&g_engine.mailbox.last_key_pressed, GLFW_KEY_ESCAPE, memory_order_release);
             glfwSetWindowShouldClose(window, GLFW_FALSE);
         }
+        SLEEP_MS(1);
     }
 
     printf("\n[C-CORE] Shutdown triggered. Waiting for Lua VM...\n");
