@@ -793,7 +793,6 @@ static vmath_cond_t g_main_cond;
 static JobType g_current_job = JOB_NONE;
 static int g_jobs_completed = 0;
 static int g_jobs_dispatched = 0;
-static int g_frame_id = 0;
 
 // ============================================================================
 // 5. THE WORKER EXECUTION PIPELINE
@@ -801,27 +800,21 @@ static int g_frame_id = 0;
 THREAD_FUNC worker_loop(void* arg) {
     int id = (int)(intptr_t)arg;
     WorkerContext* ctx = &g_contexts[id];
-    int last_frame = -1; // NEW
 
     while (1) {
         // --- 1. WAIT FOR JOB BROADCAST ---
         vmath_mutex_lock(&g_job_mutex);
-
-        // MODIFIED: Wait for new generation or EXIT
-        while (g_current_job == JOB_NONE || g_frame_id == last_frame) {
+        while (g_current_job == JOB_NONE) {
             vmath_cond_wait(&g_job_cond, &g_job_mutex);
         }
         JobType job = g_current_job;
-        last_frame = g_frame_id; // NEW: Claim current frame
         vmath_mutex_unlock(&g_job_mutex);
 
         if (job == JOB_EXIT) break;
 
         // --- 2. EXECUTE KERNEL PIPELINE ---
         if (job == JOB_SWARM_STEP) {
-            // [UNCHANGED: Phases A, B, and C remain exactly the same]
-
-           int chunk = ctx->end_idx - ctx->start_idx;
+            int chunk = ctx->end_idx - ctx->start_idx;
             int start = ctx->start_idx;
 
             // Phase A: Physics Integration & Bounds
@@ -875,9 +868,11 @@ THREAD_FUNC worker_loop(void* arg) {
         vmath_mutex_lock(&g_job_mutex);
         g_jobs_completed++;
         if (g_jobs_completed == g_jobs_dispatched) {
-            vmath_cond_broadcast(&g_main_cond);
+            vmath_cond_broadcast(&g_main_cond); // Wake the main Lua thread
         }
-        // REMOVED: The secondary while(g_current_job != JOB_NONE) wait loop
+        while (g_current_job != JOB_NONE) {
+            vmath_cond_wait(&g_job_cond, &g_job_mutex); // Sleep until job state resets
+        }
         vmath_mutex_unlock(&g_job_mutex);
     }
     return THREAD_RETURN_VAL;
@@ -898,7 +893,6 @@ EXPORT void vmath_init_workers(int num_threads) {
 EXPORT void vmath_destroy_workers() {
     vmath_mutex_lock(&g_job_mutex);
     g_current_job = JOB_EXIT;
-    g_frame_id++;
     vmath_cond_broadcast(&g_job_cond);
     vmath_mutex_unlock(&g_job_mutex);
 
@@ -952,7 +946,6 @@ EXPORT void vmath_dispatch_swarm(
     }
 
     // Fire the broadcast
-    g_frame_id++;
     g_current_job = JOB_SWARM_STEP;
     vmath_cond_broadcast(&g_job_cond);
 
@@ -963,5 +956,6 @@ EXPORT void vmath_dispatch_swarm(
 
     // Acknowledge completion and reset
     g_current_job = JOB_NONE;
+    vmath_cond_broadcast(&g_job_cond);
     vmath_mutex_unlock(&g_job_mutex);
 }
