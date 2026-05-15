@@ -26,7 +26,11 @@
 typedef pthread_t vmath_thread_t;
 #define THREAD_FUNC void*
 #define THREAD_RETURN_VAL NULL
-
+#if defined(_WIN32) || defined(_WIN64)
+    #include <windows.h>
+    #include <timeapi.h>
+    #pragma comment(lib, "winmm.lib")
+#endif
 static vmath_thread_t vmath_thread_start(void* (*func)(void*), void* arg) {
     pthread_t thread;
     pthread_create(&thread, NULL, func, arg);
@@ -237,48 +241,88 @@ typedef struct {
 
 _Static_assert(sizeof(PushConstants) == 128, "PushConstants MUST be exactly 128 bytes!");
 
-typedef struct __attribute__((packed, aligned(16))) {
-    VkCommandBuffer cmd;
+// WSI Bridge Struct
+typedef struct {
+    VkDevice device;
+    VkQueue queue;
+    VkSwapchainKHR swapchain;
+    uint64_t swapchain_images[10];
+    uint64_t swapchain_views[10];
+    VkSemaphore image_available[3];
+    VkSemaphore render_finished[3];
+    VkFence in_flight[3];
+    void* vkWaitForFences;
+    void* vkAcquireNextImageKHR;
+    void* vkResetFences;
+    void* vkQueueSubmit;
+    void* vkQueuePresentKHR;
+    void* pfnBegin;
+    void* pfnEnd;
+} RenderThreadInit;
+
+typedef struct __attribute__((packed, aligned(64))) {
     uint64_t comp_pipeline;
     uint64_t comp_layout;
     uint64_t gfx_pipeline;
     uint64_t gfx_layout;
     uint64_t desc_set;
     uint64_t vertex_buffer;
+    uint64_t index_buffer;     // Added
     uint64_t swapchain_image;
     uint64_t swapchain_view;
     uint64_t depth_image;
     uint64_t depth_view;
     uint32_t width;
     uint32_t height;
-    PushConstants* pc; // <-- CHANGED TO POINTER!
+    uint8_t pc_payload[128];
+    uint8_t _padding[32];      // Adjusted to maintain 256-byte alignment
 } RenderPacket;
 
-EXPORT void vibe_record_commands(RenderPacket* p, PFN_vkCmdBeginRenderingKHR pfnBegin, PFN_vkCmdEndRenderingKHR pfnEnd) {
+// The Triad Topology
+typedef struct {
+    alignas(64) RenderPacket packets[3];
+    alignas(64) _Atomic int ready_idx;
+    alignas(64) _Atomic int read_idx;
+} RenderRing;
+static RenderRing g_ring = {
+    .ready_idx = -1,
+    .read_idx = -1
+};
+static RenderThreadInit g_wsi;
+static vmath_thread_t g_render_thread;
+static atomic_int g_render_thread_active = 0;
+
+EXPORT void vibe_ring_init_wsi(RenderThreadInit* wsi) {
+    g_wsi = *wsi;
+
+    // Purge stale packets across WSI rebuilds
+    atomic_store_explicit(&g_ring.ready_idx, -1, memory_order_release);
+    atomic_store_explicit(&g_ring.read_idx, -1, memory_order_release);
+}
+
+EXPORT RenderPacket* vibe_ring_get_packet(int idx) {
+    return &g_ring.packets[idx];
+}
+
+EXPORT int vibe_ring_get_write_idx() {
+    int ready = atomic_load_explicit(&g_ring.ready_idx, memory_order_acquire);
+    int read = atomic_load_explicit(&g_ring.read_idx, memory_order_acquire);
+
+    // Mathematical selection of the unoccupied slot
+    if (ready != read && ready >= 0 && read >= 0) {
+        return 3 - (ready + read);
+    }
+    return (ready == -1) ? 0 : (ready + 1) % 3;
+}
+
+EXPORT void vibe_ring_submit(int idx) {
+    atomic_store_explicit(&g_ring.ready_idx, idx, memory_order_release);
+}
+EXPORT void vibe_record_commands(VkCommandBuffer cmd, RenderPacket* p, PFN_vkCmdBeginRenderingKHR pfnBegin, PFN_vkCmdEndRenderingKHR pfnEnd) {
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-    vkBeginCommandBuffer(p->cmd, &beginInfo);
+    vkBeginCommandBuffer(cmd, &beginInfo);
+    PushConstants* local_pc = (PushConstants*)p->pc_payload;
 
-    // --- COMPUTE PASS ---
-    vkCmdBindPipeline(p->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipeline)p->comp_pipeline);
-
-    VkDescriptorSet dset = (VkDescriptorSet)p->desc_set;
-    vkCmdBindDescriptorSets(p->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->comp_layout, 0, 1, &dset, 0, NULL);
-
-    // Pass the pointer directly
-    vkCmdPushConstants(p->cmd, (VkPipelineLayout)p->comp_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), p->pc);
-
-    // Use -> operator to read particle_count
-    uint32_t workgroups = (p->pc->particle_count + 255) / 256;
-    vkCmdDispatch(p->cmd, workgroups, 1, 1);
-
-    VkMemoryBarrier compBarrier = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT
-    };
-    vkCmdPipelineBarrier(p->cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &compBarrier, 0, NULL, 0, NULL);
-
-    // --- GRAPHICS PASS ---
     VkImageMemoryBarrier preBarriers[2] = {0};
     preBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     preBarriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -294,7 +338,7 @@ EXPORT void vibe_record_commands(RenderPacket* p, PFN_vkCmdBeginRenderingKHR pfn
     preBarriers[1].subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
     preBarriers[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-    vkCmdPipelineBarrier(p->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, NULL, 0, NULL, 2, preBarriers);
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, NULL, 0, NULL, 2, preBarriers);
 
     VkRenderingAttachmentInfoKHR colorAttachment = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR,
@@ -323,27 +367,32 @@ EXPORT void vibe_record_commands(RenderPacket* p, PFN_vkCmdBeginRenderingKHR pfn
         .pDepthAttachment = &depthAttachment
     };
 
-    pfnBegin(p->cmd, &renderInfo);
+    pfnBegin(cmd, &renderInfo);
 
-    vkCmdBindPipeline(p->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)p->gfx_pipeline);
-    vkCmdBindDescriptorSets(p->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipelineLayout)p->gfx_layout, 0, 1, &dset, 0, NULL);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)p->gfx_pipeline);
+    VkDescriptorSet dset = (VkDescriptorSet)p->desc_set;
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipelineLayout)p->gfx_layout, 0, 1, &dset, 0, NULL);
 
     VkViewport viewport = {0.0f, 0.0f, (float)p->width, (float)p->height, 0.0f, 1.0f};
     VkRect2D scissor = {{0, 0}, {p->width, p->height}};
-    vkCmdSetViewport(p->cmd, 0, 1, &viewport);
-    vkCmdSetScissor(p->cmd, 0, 1, &scissor);
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     VkDeviceSize offset = 0;
     VkBuffer vbo = (VkBuffer)p->vertex_buffer;
-    vkCmdBindVertexBuffers(p->cmd, 0, 1, &vbo, &offset);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vbo, &offset);
 
-    // Pass the pointer directly
-    vkCmdPushConstants(p->cmd, (VkPipelineLayout)p->gfx_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), p->pc);
+    vkCmdPushConstants(cmd, (VkPipelineLayout)p->gfx_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 128, p->pc_payload);
 
-    // Use -> operator to read particle_count
-    vkCmdDraw(p->cmd, p->pc->particle_count, 1, 0, 0);
+    if (p->index_buffer != 0) {
+        VkBuffer ibo = (VkBuffer)p->index_buffer;
+        vkCmdBindIndexBuffer(cmd, ibo, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, local_pc->particle_count * 12, 1, 0, 0, 0);
+    } else {
+        vkCmdDraw(cmd, local_pc->particle_count, 1, 0, 0);
+    }
 
-    pfnEnd(p->cmd);
+    pfnEnd(cmd);
 
     VkImageMemoryBarrier presentBarrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -354,12 +403,116 @@ EXPORT void vibe_record_commands(RenderPacket* p, PFN_vkCmdBeginRenderingKHR pfn
         .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
         .dstAccessMask = 0
     };
-    vkCmdPipelineBarrier(p->cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &presentBarrier);
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &presentBarrier);
 
-    vkEndCommandBuffer(p->cmd);
+    vkEndCommandBuffer(cmd);
 }
-// ==============================================================================
+THREAD_FUNC render_thread_loop(void* arg) {
+    printf("[C-CORE] Async Render Thread Online.\n");
 
+    // 1. C-Owned Command Pool Setup
+    VkCommandPool cmd_pool;
+    VkCommandPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = 0 // Assuming Graphics queue index is 0 in your setup
+    };
+    vkCreateCommandPool(g_wsi.device, &pool_info, NULL, &cmd_pool);
+
+    VkCommandBuffer cmd_buffers[3];
+    VkCommandBufferAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = cmd_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 3
+    };
+    vkAllocateCommandBuffers(g_wsi.device, &alloc_info, cmd_buffers);
+
+    uint32_t current_frame = 0;
+    int local_read = -1;
+
+    // Typecast Vulkan WSI Pointers
+    PFN_vkWaitForFences pfnWait = (PFN_vkWaitForFences)g_wsi.vkWaitForFences;
+    PFN_vkAcquireNextImageKHR pfnAcquire = (PFN_vkAcquireNextImageKHR)g_wsi.vkAcquireNextImageKHR;
+    PFN_vkResetFences pfnReset = (PFN_vkResetFences)g_wsi.vkResetFences;
+    PFN_vkQueueSubmit pfnSubmit = (PFN_vkQueueSubmit)g_wsi.vkQueueSubmit;
+    PFN_vkQueuePresentKHR pfnPresent = (PFN_vkQueuePresentKHR)g_wsi.vkQueuePresentKHR;
+
+    while (atomic_load_explicit(&g_render_thread_active, memory_order_acquire) &&
+           atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_acquire)) {
+        // 2. Triad Consumer Handoff
+        int ready = atomic_load_explicit(&g_ring.ready_idx, memory_order_acquire);
+        if (ready == -1 || ready == local_read) {
+            SLEEP_MS(1);
+            continue; // Spinlock: Lua hasn't finished a new frame yet
+        }
+        local_read = ready;
+        atomic_store_explicit(&g_ring.read_idx, local_read, memory_order_release);
+
+        RenderPacket* p = &g_ring.packets[local_read];
+        VkCommandBuffer cmd = cmd_buffers[current_frame];
+
+        // 3. WSI Lifecycle
+        pfnWait(g_wsi.device, 1, &g_wsi.in_flight[current_frame], VK_TRUE, UINT64_MAX);
+
+        uint32_t img_idx;
+        VkResult res = pfnAcquire(g_wsi.device, g_wsi.swapchain, UINT64_MAX,
+                                  g_wsi.image_available[current_frame], VK_NULL_HANDLE, &img_idx);
+
+        if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+            atomic_store_explicit(&g_engine.mailbox.window_resized, 1, memory_order_release);
+            SLEEP_MS(10);
+            continue;
+        }
+        pfnReset(g_wsi.device, 1, &g_wsi.in_flight[current_frame]);
+
+        // 4. Dynamic Swapchain Injection & Command Record
+        p->swapchain_image = g_wsi.swapchain_images[img_idx];
+        p->swapchain_view  = g_wsi.swapchain_views[img_idx];
+
+        vkResetCommandBuffer(cmd, 0);
+        vibe_record_commands(cmd, p, (PFN_vkCmdBeginRenderingKHR)g_wsi.pfnBegin, (PFN_vkCmdEndRenderingKHR)g_wsi.pfnEnd);
+
+        // 5. Submit
+        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSubmitInfo submitInfo = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &g_wsi.image_available[current_frame],
+            .pWaitDstStageMask = &waitStage,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &cmd,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &g_wsi.render_finished[current_frame]
+        };
+        pfnSubmit(g_wsi.queue, 1, &submitInfo, g_wsi.in_flight[current_frame]);
+
+        // 6. Present
+        VkPresentInfoKHR presentInfo = {
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &g_wsi.render_finished[current_frame],
+            .swapchainCount = 1,
+            .pSwapchains = &g_wsi.swapchain,
+            .pImageIndices = &img_idx
+        };
+        pfnPresent(g_wsi.queue, &presentInfo);
+
+        current_frame = (current_frame + 1) % 3;
+    }
+    return NULL;
+}
+
+EXPORT void vibe_start_render_thread() {
+    atomic_store_explicit(&g_render_thread_active, 1, memory_order_release);
+    g_render_thread = vmath_thread_start(render_thread_loop, NULL);
+}
+
+EXPORT void vibe_kill_render_thread() {
+    atomic_store_explicit(&g_render_thread_active, 0, memory_order_release);
+    vmath_thread_join(g_render_thread); // This physically pauses Lua until the C-thread exits cleanly!
+    printf("[C-CORE] Async Render Thread gracefully terminated for rebuild.\n");
+}
 void vibe_init_mailbox() {
     atomic_init(&g_engine.mailbox.ready_index, 0);
     atomic_init(&g_engine.mailbox.is_running, 1);
@@ -447,6 +600,7 @@ int main(int argc, char** argv) {
             atomic_store_explicit(&g_engine.mailbox.last_key_pressed, GLFW_KEY_ESCAPE, memory_order_release);
             glfwSetWindowShouldClose(window, GLFW_FALSE);
         }
+        SLEEP_MS(1);
     }
 
     printf("\n[C-CORE] Shutdown triggered. Waiting for Lua VM...\n");

@@ -1,18 +1,3 @@
-AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua_engine
-$ git pull
-remote: Enumerating objects: 5, done.
-remote: Counting objects: 100% (5/5), done.
-remote: Compressing objects: 100% (1/1), done.
-remote: Total 3 (delta 2), reused 3 (delta 2), pack-reused 0 (from 0)
-Unpacking objects: 100% (3/3), 381 bytes | 3.00 KiB/s, done.
-From https://github.com/beyondbrokkoli/lua_engine
-   2bcfc5f..7cf79de  main       -> origin/main
-Updating 2bcfc5f..7cf79de
-Fast-forward
- renderer.lua | 5 ++++-
- 1 file changed, 4 insertions(+), 1 deletion(-)
-
-AzureAD+HalimOmarZaghdoudi@DESKTOP-BD3FFTI MINGW64 ~/lua_engine
 $ ./boot.exe
 [C-CORE] Booting Headless Worker...
 [LUA-OS-THREAD] Booting Lua VM...
@@ -26,9 +11,12 @@ $ ./boot.exe
 [LUA] Window Surface Linked from Main Thread!
 [LUA] Hardware GPU Selected!
 [LUA] Logical Device Created!
-[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x019976b3dc08
+[DEBUG] Device Pointer in core:         cdata<struct VkDevice_T *>: 0x022a6115dde8
 [MEMORY] ReBAR Supported! Streaming directly to VRAM.
 [MEMORY] Allocated & Mapped VRAM Buffer: MASTER_GPU_BLOCK (256.00 MB)
+[MEMORY] ReBAR Supported! Streaming directly to VRAM.
+[MEMORY] Allocated & Mapped VRAM Buffer: MASTER_INDEX_BLOCK (45.78 MB)
+[LUA IO] Seeding Swarm Entropy & Geometry...
 [SWAPCHAIN] Building the display chain...
 [SWAPCHAIN] Created successfully with 3 images!
 [DESCRIPTORS] Wiring Master VRAM Arena as a Unified SSBO...
@@ -40,21 +28,21 @@ $ ./boot.exe
 [FACTORY] Forging Triple-Buffered Command Matrix...
 [RENDERER] Forging Synchronization Primitives...
 [LUA CO] Render Fiber Weaving...
+[C-CORE] Async Render Thread Online.
+[LUA CO] Window Stable. Initiating Vulkan Rebuild...
+[C-CORE] Async Render Thread gracefully terminated for rebuild.
+[TEARDOWN] Destroying Graphics Pipeline & Depth Buffer...
+[TEARDOWN] Destroying Swapchain & Image Views...
+[TEARDOWN] Dismantling Renderer Sync Objects...
+[SWAPCHAIN] Building the display chain...
+[SWAPCHAIN] Created successfully with 3 images!
+[GRAPHICS] Building Reverse-Z Depth Buffer and Shader Modules...
+[GRAPHICS] Swarm Pipeline Successfully Compiled!
+[RENDERER] Forging Synchronization Primitives...
+[LUA CO] Rebuild Complete. Resuming Weaver.
+[C-CORE] Async Render Thread Online.
+[LUA IO] ESCAPE PRESSED. Executing Teardown...
+[LUA-OS-THREAD] VM Destroyed.
 
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdPipelineBarrier(): pImageMemoryBarriers[0].image is VK_NULL_HANDLE.
-
-
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdPipelineBarrier(): pImageMemoryBarriers[0].image Invalid VkImage Object 0x0.
-The Vulkan spec states: image must be a valid VkImage handle (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-VkImageMemoryBarrier-image-parameter)
-
-
-[VULKAN LAYER ENFORCER]
-SEVERITY: 4096
-MESSAGE: vkCmdPipelineBarrier(): pImageMemoryBarriers[0].srcAccessMask (VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT) is not supported by stage mask (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT).
-The Vulkan spec states: For each element of pImageMemoryBarriers, if its srcQueueFamilyIndex and dstQueueFamilyIndex members are equal, or if its srcQueueFamilyIndex is the queue family index that was used to create the command pool that commandBuffer was allocated from, then its srcAccessMask member must only contain access flags that are supported by one or more of the pipeline stages in srcStageMask, as specified in the table of supported access types (https://docs.vulkan.org/spec/latest/chapters/synchronization.html#VUID-vkCmdPipelineBarrier-pImageMemoryBarriers-02819)
-
-Segmentation fault         ./boot.exe
+[C-CORE] Shutdown triggered. Waiting for Lua VM...
+[C-CORE] Clean Exit.

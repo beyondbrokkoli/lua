@@ -35,7 +35,8 @@ function Descriptors.Init(vk, device, master_gpu_buffer)
     -- 2. Push Constant Range (64-Byte Router)
     -- ========================================================
     local pushRange = ffi.new("VkPushConstantRange[1]")
-    pushRange[0].stageFlags = STAGE_ALL
+    -- pushRange[0].stageFlags = STAGE_ALL
+    pushRange[0].stageFlags = 1 -- VK_SHADER_STAGE_VERTEX_BIT
     pushRange[0].offset = 0
     pushRange[0].size = 128
 
