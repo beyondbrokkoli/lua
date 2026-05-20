@@ -175,27 +175,6 @@ function Renderer.AllocateFrameState(vk, device, width, height)
     return state
 end
 
-function Renderer.ExecuteFrame(swapchain, unified_buffer, index_buffer, p_compute, p_gfx, pc_bytes, desc_state)
-    local write_idx = ffi.C.vibe_ring_get_write_idx()
-    local packet = ffi.C.vibe_ring_get_packet(write_idx)
-
-    packet.comp_pipeline = 0
-    packet.comp_layout   = 0
-    packet.gfx_pipeline  = ffi.cast("uint64_t", p_gfx.pipeline)
-    packet.gfx_layout    = ffi.cast("uint64_t", p_gfx.pipelineLayout)
-    packet.desc_set      = ffi.cast("uint64_t", desc_state.set0)
-    packet.vertex_buffer = ffi.cast("uint64_t", unified_buffer)
-    packet.index_buffer  = ffi.cast("uint64_t", index_buffer)
-    packet.depth_image   = ffi.cast("uint64_t", p_gfx.depthImage)
-    packet.depth_view    = ffi.cast("uint64_t", p_gfx.depthImageView)
-    packet.width         = swapchain.extent.width
-    packet.height        = swapchain.extent.height
-
-    ffi.copy(packet.pc_payload, pc_bytes, 128)
-    ffi.C.vibe_ring_submit(write_idx)
-    return true
-end
-
 function Renderer.Destroy(vk, device, sync, frames_in_flight)
     print("[TEARDOWN] Dismantling Renderer Sync Objects...")
     vk.vkDeviceWaitIdle(device)

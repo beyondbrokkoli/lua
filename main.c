@@ -45,6 +45,11 @@ static void vmath_thread_join(vmath_thread_t thread) {
 #define CMD_BOOT_WINDOW 1
 #define CMD_KILL_WINDOW 2
 
+// Fullscreen State Tracking
+static bool s_is_fullscreen = false;
+static int s_win_x = 0, s_win_y = 0;
+static int s_win_w = 1280, s_win_h = 720;
+
 typedef struct {
     alignas(64) _Atomic int ready_index;
     _Atomic int is_running;
@@ -61,6 +66,9 @@ typedef struct {
     _Atomic int window_resized;
     _Atomic int win_w;
     _Atomic int win_h;
+    _Atomic int mouse_left;
+    _Atomic int mouse_right;
+    _Atomic int key_space;
 } IPC_Mailbox;
 
 typedef struct {
@@ -119,13 +127,22 @@ void glfw_cursor_callback(GLFWwindow* window, double xpos, double ypos) {
 }
 
 void glfw_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
-    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
-        if (!s_mouse_captured) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        if (action == GLFW_PRESS && !s_mouse_captured) {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
             s_mouse_captured = true;
-            first_mouse = true; // Reset mouse delta to prevent camera snapping
+            first_mouse = true;
         }
+        atomic_store_explicit(&g_engine.mailbox.mouse_left, (action == GLFW_PRESS) ? 1 : 0, memory_order_release);
+    } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+        atomic_store_explicit(&g_engine.mailbox.mouse_right, (action == GLFW_PRESS) ? 1 : 0, memory_order_release);
     }
+}
+
+EXPORT int vibe_get_mouse_btn(int btn) {
+    if (btn == 0) return atomic_load_explicit(&g_engine.mailbox.mouse_left, memory_order_acquire);
+    if (btn == 1) return atomic_load_explicit(&g_engine.mailbox.mouse_right, memory_order_acquire);
+    return 0;
 }
 void glfw_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
     if (action == GLFW_PRESS || action == GLFW_RELEASE) {
@@ -149,6 +166,32 @@ void glfw_key_callback(GLFWwindow* window, int key, int scancode, int action, in
         } else {
             // Stage 2: Trigger Shutdown if mouse is already free
             atomic_store_explicit(&g_engine.mailbox.last_key_pressed, GLFW_KEY_ESCAPE, memory_order_release);
+        }
+    }
+    if (key == GLFW_KEY_SPACE) {
+        // 1 means pressed or held, 0 means released
+        atomic_store_explicit(&g_engine.mailbox.key_space, (action != GLFW_RELEASE) ? 1 : 0, memory_order_release);
+    }
+    // === F11 NATIVE FULLSCREEN TOGGLE ===
+    if (key == GLFW_KEY_F11 && action == GLFW_PRESS) {
+        if (!s_is_fullscreen) {
+            // 1. Save the exact window position and size before maximizing
+            glfwGetWindowPos(window, &s_win_x, &s_win_y);
+            glfwGetWindowSize(window, &s_win_w, &s_win_h);
+
+            // 2. Get the primary monitor and its native resolution
+            GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+            const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+
+            // 3. Switch to borderless fullscreen on that monitor
+            glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+            s_is_fullscreen = true;
+            printf("[C-CORE] Native Fullscreen Engaged (%dx%d @ %dHz)\n", mode->width, mode->height, mode->refreshRate);
+        } else {
+            // Restore back to the exact windowed state
+            glfwSetWindowMonitor(window, NULL, s_win_x, s_win_y, s_win_w, s_win_h, 0);
+            s_is_fullscreen = false;
+            printf("[C-CORE] Windowed Mode Restored\n");
         }
     }
 }
@@ -220,28 +263,92 @@ void glfw_framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     atomic_store_explicit(&g_engine.mailbox.win_h, height, memory_order_release);
     atomic_store_explicit(&g_engine.mailbox.window_resized, 1, memory_order_release);
 }
-
-// ==============================================================================
-// NATIVE C-CORE RENDER BINDINGS
-// ==============================================================================
-
+EXPORT int vibe_get_spacebar() {
+    return atomic_load_explicit(&g_engine.mailbox.key_space, memory_order_acquire);
+}
+// ==========================================
+// MATHEMATICS & COMMAND STRUCTS
+// ==========================================
 typedef struct {
     float m[16];
 } mat4_t;
 
 typedef struct {
-    mat4_t viewProj;         // 64 bytes
-    uint32_t pos_x_idx;      // +4 = 68
-    uint32_t pos_y_idx;      // +4 = 72
-    uint32_t pos_z_idx;      // +4 = 76
-    uint32_t particle_count; // +4 = 80
-    float dt;                // +4 = 84
-    uint32_t _padding[11];   // +44 = 128 bytes
-} PushConstants;
+    mat4_t viewProj;           // Offset 0   (64 bytes)
+    uint32_t pos_x_idx;        // Offset 64  (4 bytes)
+    uint32_t pos_y_idx;        // Offset 68  (4 bytes)
+    uint32_t pos_z_idx;        // Offset 72  (4 bytes)
+    uint32_t particle_count;   // Offset 76  (4 bytes)
+    float dt;                  // Offset 80  (4 bytes)
+
+    // -- COMPUTATIONAL SWARM PAYLOAD --
+    uint32_t vel_x_idx;        // Offset 84  (4 bytes)
+    uint32_t vel_y_idx;        // Offset 88  (4 bytes)
+    uint32_t vel_z_idx;        // Offset 92  (4 bytes)
+    uint32_t target_state;     // Offset 96  (4 bytes)
+    uint32_t push_active;      // Offset 100 (4 bytes)
+    uint32_t pull_active;      // Offset 104 (4 bytes)
+    float mouse_x;             // Offset 108 (4 bytes)
+    float mouse_y;             // Offset 112 (4 bytes)
+
+    uint32_t _padding[3];      // Offset 116 (12 bytes)
+} PushConstants;               // TOTAL: 128 Bytes (Perfect)
 
 _Static_assert(sizeof(PushConstants) == 128, "PushConstants MUST be exactly 128 bytes!");
 
-// WSI Bridge Struct
+// ==========================================
+// DATA-ORIENTED RENDER QUEUE STRUCTS
+// ==========================================
+typedef struct {
+    uint64_t pipeline_id;
+    uint64_t descriptor_set;
+    uint32_t index_count;       // Swapped from vertex_count
+    uint32_t instance_count;
+    uint32_t first_index;       // Swapped from first_vertex
+    int32_t  vertex_offset;     // NEW: Allows us to shift the starting vertex
+    uint32_t first_instance;
+    uint32_t _pad_cmd;          // NEW: Keeps the 8-byte alignment perfect
+    uint8_t  push_constants[128];
+    uint8_t  _padding[24];      // Adjusted to keep exactly 192 bytes
+} DrawCommand;
+
+_Static_assert(sizeof(DrawCommand) == 192, "DrawCommand MUST be exactly 192 bytes!");
+
+// Packed is safe here because we manually aligned the pointer to offset 96.
+typedef struct __attribute__((packed, aligned(64))) {
+    uint64_t comp_pipeline;    // 8 bytes
+    uint64_t comp_layout;      // 8 bytes
+    uint64_t comp_desc_set;    // 8 bytes
+    uint64_t gfx_layout;       // 8 bytes
+    uint64_t vertex_buffer;    // 8 bytes
+    uint64_t index_buffer;     // 8 bytes
+    uint64_t swapchain_image;  // 8 bytes
+    uint64_t swapchain_view;   // 8 bytes
+    uint64_t depth_image;      // 8 bytes
+    uint64_t depth_view;       // 8 bytes
+                               // --- Subtotal: 80 bytes
+
+    uint32_t width;            // 4 bytes
+    uint32_t height;           // 4 bytes
+    uint32_t draw_count;       // 4 bytes
+    uint32_t _pad_ptr;         // 4 bytes (CRITICAL: Aligns pointer to 96)
+                               // --- Subtotal: 96 bytes
+
+    DrawCommand* draw_queue;   // 8 bytes (Properly aligned to 8-byte boundary)
+                               // --- Subtotal: 104 bytes
+
+    uint8_t comp_pc_payload[128]; // 128 bytes
+                               // --- Subtotal: 232 bytes
+
+    uint8_t _padding[24];      // 24 bytes (Rounds out the 4th cache line)
+                               // --- TOTAL: 256 bytes
+} RenderPacket;
+
+_Static_assert(sizeof(RenderPacket) == 256, "RenderPacket MUST be exactly 256 bytes!");
+
+// ==========================================
+// C-ONLY SYNCHRONIZATION (HIDDEN FROM LUA)
+// ==========================================
 typedef struct {
     VkDevice device;
     VkQueue queue;
@@ -249,7 +356,7 @@ typedef struct {
     uint64_t swapchain_images[10];
     uint64_t swapchain_views[10];
     VkSemaphore image_available[3];
-    VkSemaphore render_finished[3];
+    VkSemaphore render_finished[10];
     VkFence in_flight[3];
     void* vkWaitForFences;
     void* vkAcquireNextImageKHR;
@@ -260,34 +367,13 @@ typedef struct {
     void* pfnEnd;
 } RenderThreadInit;
 
-typedef struct __attribute__((packed, aligned(64))) {
-    uint64_t comp_pipeline;
-    uint64_t comp_layout;
-    uint64_t gfx_pipeline;
-    uint64_t gfx_layout;
-    uint64_t desc_set;
-    uint64_t vertex_buffer;
-    uint64_t index_buffer;     // Added
-    uint64_t swapchain_image;
-    uint64_t swapchain_view;
-    uint64_t depth_image;
-    uint64_t depth_view;
-    uint32_t width;
-    uint32_t height;
-    uint8_t pc_payload[128];
-    uint8_t _padding[32];      // Adjusted to maintain 256-byte alignment
-} RenderPacket;
-
-// The Triad Topology
 typedef struct {
     alignas(64) RenderPacket packets[3];
     alignas(64) _Atomic int ready_idx;
     alignas(64) _Atomic int read_idx;
 } RenderRing;
-static RenderRing g_ring = {
-    .ready_idx = -1,
-    .read_idx = -1
-};
+
+static RenderRing g_ring = { .ready_idx = -1, .read_idx = -1 };
 static RenderThreadInit g_wsi;
 static vmath_thread_t g_render_thread;
 static atomic_int g_render_thread_active = 0;
@@ -318,24 +404,44 @@ EXPORT int vibe_ring_get_write_idx() {
 EXPORT void vibe_ring_submit(int idx) {
     atomic_store_explicit(&g_ring.ready_idx, idx, memory_order_release);
 }
-EXPORT void vibe_record_commands(VkCommandBuffer cmd, RenderPacket* p, PFN_vkCmdBeginRenderingKHR pfnBegin, PFN_vkCmdEndRenderingKHR pfnEnd) {
+
+EXPORT void vibe_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand* queue, uint32_t count, PFN_vkCmdBeginRenderingKHR pfnBegin, PFN_vkCmdEndRenderingKHR pfnEnd) {
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     vkBeginCommandBuffer(cmd, &beginInfo);
-    PushConstants* local_pc = (PushConstants*)p->pc_payload;
 
+    // 1. Compute Dispatch (Preserved)
+    if (p->comp_pipeline != 0) {
+        PushConstants* local_pc = (PushConstants*)p->comp_pc_payload;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipeline)p->comp_pipeline);
+        VkDescriptorSet dset = (VkDescriptorSet)p->comp_desc_set;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->comp_layout, 0, 1, &dset, 0, NULL);
+        vkCmdPushConstants(cmd, (VkPipelineLayout)p->comp_layout, VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT, 0, 128, p->comp_pc_payload);
+
+        uint32_t group_count = (local_pc->particle_count + 255) / 256;
+        vkCmdDispatch(cmd, group_count, 1, 1);
+
+        VkMemoryBarrier compBarrier = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_SHADER_READ_BIT
+        };
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, &compBarrier, 0, NULL, 0, NULL);
+    }
+
+    // 2. Setup Render Pass Barriers (Preserved)
     VkImageMemoryBarrier preBarriers[2] = {0};
     preBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     preBarriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     preBarriers[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     preBarriers[0].image = (VkImage)p->swapchain_image;
-    preBarriers[0].subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    preBarriers[0].subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     preBarriers[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
     preBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     preBarriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     preBarriers[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     preBarriers[1].image = (VkImage)p->depth_image;
-    preBarriers[1].subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+    preBarriers[1].subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
     preBarriers[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, NULL, 0, NULL, 2, preBarriers);
@@ -369,10 +475,7 @@ EXPORT void vibe_record_commands(VkCommandBuffer cmd, RenderPacket* p, PFN_vkCmd
 
     pfnBegin(cmd, &renderInfo);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)p->gfx_pipeline);
-    VkDescriptorSet dset = (VkDescriptorSet)p->desc_set;
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipelineLayout)p->gfx_layout, 0, 1, &dset, 0, NULL);
-
+    // 3. Global Graphics State Setup
     VkViewport viewport = {0.0f, 0.0f, (float)p->width, (float)p->height, 0.0f, 1.0f};
     VkRect2D scissor = {{0, 0}, {p->width, p->height}};
     vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -382,29 +485,53 @@ EXPORT void vibe_record_commands(VkCommandBuffer cmd, RenderPacket* p, PFN_vkCmd
     VkBuffer vbo = (VkBuffer)p->vertex_buffer;
     vkCmdBindVertexBuffers(cmd, 0, 1, &vbo, &offset);
 
-    vkCmdPushConstants(cmd, (VkPipelineLayout)p->gfx_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 128, p->pc_payload);
+    // --- BIND THE INDEX BUFFER ---
+    VkBuffer ibo = (VkBuffer)p->index_buffer;
+    // VK_INDEX_TYPE_UINT32 because we allocated our MASTER_INDEX_BLOCK as uint32_t
+    vkCmdBindIndexBuffer(cmd, ibo, 0, VK_INDEX_TYPE_UINT32);
 
-    if (p->index_buffer != 0) {
-        VkBuffer ibo = (VkBuffer)p->index_buffer;
-        vkCmdBindIndexBuffer(cmd, ibo, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, local_pc->particle_count * 12, 1, 0, 0, 0);
-    } else {
-        vkCmdDraw(cmd, local_pc->particle_count, 1, 0, 0);
+    // 4. Data-Oriented Queue Execution
+    uint64_t current_pipeline = 0;
+    uint64_t current_descriptor = 0;
+
+    for (uint32_t i = 0; i < count; i++) {
+        DrawCommand* draw = &queue[i];
+
+        if (draw->pipeline_id != current_pipeline) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)draw->pipeline_id);
+            current_pipeline = draw->pipeline_id;
+        }
+
+        if (draw->descriptor_set != current_descriptor) {
+            VkDescriptorSet dset = (VkDescriptorSet)draw->descriptor_set;
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipelineLayout)p->gfx_layout, 0, 1, &dset, 0, NULL);
+            current_descriptor = draw->descriptor_set;
+        }
+
+        vkCmdPushConstants(cmd, (VkPipelineLayout)p->gfx_layout, VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT, 0, 128, draw->push_constants);
+
+        vkCmdDrawIndexed(cmd,
+            draw->index_count,
+            draw->instance_count,
+            draw->first_index,
+            draw->vertex_offset,
+            draw->first_instance
+        );
     }
 
     pfnEnd(cmd);
 
+    // 5. Present Barrier (Preserved)
     VkImageMemoryBarrier presentBarrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         .image = (VkImage)p->swapchain_image,
-        .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        .subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
         .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
         .dstAccessMask = 0
     };
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &presentBarrier);
-
     vkEndCommandBuffer(cmd);
 }
 THREAD_FUNC render_thread_loop(void* arg) {
@@ -471,7 +598,7 @@ THREAD_FUNC render_thread_loop(void* arg) {
         p->swapchain_view  = g_wsi.swapchain_views[img_idx];
 
         vkResetCommandBuffer(cmd, 0);
-        vibe_record_commands(cmd, p, (PFN_vkCmdBeginRenderingKHR)g_wsi.pfnBegin, (PFN_vkCmdEndRenderingKHR)g_wsi.pfnEnd);
+        vibe_record_commands(cmd, p, p->draw_queue, p->draw_count, (PFN_vkCmdBeginRenderingKHR)g_wsi.pfnBegin, (PFN_vkCmdEndRenderingKHR)g_wsi.pfnEnd);
 
         // 5. Submit
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -483,7 +610,8 @@ THREAD_FUNC render_thread_loop(void* arg) {
             .commandBufferCount = 1,
             .pCommandBuffers = &cmd,
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &g_wsi.render_finished[current_frame]
+            // CHANGE 1: Use img_idx to guarantee 1:1 mapping with the acquired image
+            .pSignalSemaphores = &g_wsi.render_finished[img_idx]
         };
         pfnSubmit(g_wsi.queue, 1, &submitInfo, g_wsi.in_flight[current_frame]);
 
@@ -491,7 +619,8 @@ THREAD_FUNC render_thread_loop(void* arg) {
         VkPresentInfoKHR presentInfo = {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &g_wsi.render_finished[current_frame],
+            // CHANGE 2: Wait on the semaphore tied to this specific image
+            .pWaitSemaphores = &g_wsi.render_finished[img_idx],
             .swapchainCount = 1,
             .pSwapchains = &g_wsi.swapchain,
             .pImageIndices = &img_idx
@@ -500,6 +629,10 @@ THREAD_FUNC render_thread_loop(void* arg) {
 
         current_frame = (current_frame + 1) % 3;
     }
+    vkDeviceWaitIdle(g_wsi.device);
+    vkFreeCommandBuffers(g_wsi.device, cmd_pool, 3, cmd_buffers);
+    vkDestroyCommandPool(g_wsi.device, cmd_pool, NULL);
+    printf("[C-CORE] Async Render Thread gracefully terminated and pool destroyed.\n");
     return NULL;
 }
 
@@ -544,6 +677,9 @@ int main(int argc, char** argv) {
     atomic_init(&g_engine.mailbox.wasd_mask, 0);
     atomic_init(&g_engine.mailbox.mouse_dx, 0.0f);
     atomic_init(&g_engine.mailbox.mouse_dy, 0.0f);
+    atomic_init(&g_engine.mailbox.mouse_left, 0);
+    atomic_init(&g_engine.mailbox.mouse_right, 0);
+    atomic_init(&g_engine.mailbox.key_space, 0);
 
     vmath_thread_t lua_thread = vmath_thread_start(lua_co_overlord_loop, NULL);
 

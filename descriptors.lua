@@ -11,9 +11,7 @@ function Descriptors.Init(vk, device, master_gpu_buffer)
     local STAGE_COMPUTE = 32
     local STAGE_ALL = bit.bor(STAGE_VERTEX, STAGE_COMPUTE)
 
-    -- ========================================================
     -- 1. Descriptor Set Layout Binding (Single SSBO)
-    -- ========================================================
     local ssboBinding = ffi.new("VkDescriptorSetLayoutBinding[1]")
     ssboBinding[0].binding = 0
     ssboBinding[0].descriptorType = 7 -- VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
@@ -31,18 +29,16 @@ function Descriptors.Init(vk, device, master_gpu_buffer)
     assert(vk.vkCreateDescriptorSetLayout(device, layoutInfo, nil, pLayout) == 0, "FATAL: Layout Creation Failed")
     local unifiedSetLayout = pLayout[0]
 
-    -- ========================================================
     -- 2. Push Constant Range (64-Byte Router)
-    -- ========================================================
     local pushRange = ffi.new("VkPushConstantRange[1]")
     -- pushRange[0].stageFlags = STAGE_ALL
-    pushRange[0].stageFlags = 1 -- VK_SHADER_STAGE_VERTEX_BIT
+    -- pushRange[0].stageFlags = 1 -- VK_SHADER_STAGE_VERTEX_BIT
+    -- Bitwise OR to grant access to both stages
+    pushRange[0].stageFlags = bit.bor(STAGE_VERTEX, STAGE_COMPUTE)
     pushRange[0].offset = 0
     pushRange[0].size = 128
 
-    -- ========================================================
     -- 3. Pipeline Layout (Unified Router)
-    -- ========================================================
     local pipeLayoutInfo = ffi.new("VkPipelineLayoutCreateInfo")
     ffi.fill(pipeLayoutInfo, ffi.sizeof(pipeLayoutInfo))
     pipeLayoutInfo.sType = 30 -- VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
@@ -55,9 +51,7 @@ function Descriptors.Init(vk, device, master_gpu_buffer)
     assert(vk.vkCreatePipelineLayout(device, pipeLayoutInfo, nil, pPipeLayout) == 0, "FATAL: Pipeline Layout Failed")
     local unifiedPipelineLayout = pPipeLayout[0]
 
-    -- ========================================================
     -- 4. Descriptor Pool
-    -- ========================================================
     local poolSize = ffi.new("VkDescriptorPoolSize[1]")
     poolSize[0].type = 7 -- VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
     poolSize[0].descriptorCount = 1
@@ -73,9 +67,7 @@ function Descriptors.Init(vk, device, master_gpu_buffer)
     assert(vk.vkCreateDescriptorPool(device, poolInfo, nil, pPool) == 0)
     local descriptorPool = pPool[0]
 
-    -- ========================================================
     -- 5. Allocate and Update Descriptor Set
-    -- ========================================================
     local allocInfo = ffi.new("VkDescriptorSetAllocateInfo")
     ffi.fill(allocInfo, ffi.sizeof(allocInfo))
     allocInfo.sType = 34 -- VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO

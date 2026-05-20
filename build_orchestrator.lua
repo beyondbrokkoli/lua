@@ -37,9 +37,7 @@ local function compile_engine(platform)
     print("========================================")
 
     if platform == "linux" then
-        -- ==========================================
         -- LINUX BUILD PIPELINE
-        -- ==========================================
         print("\n[1/3] Compiling SPIR-V Shaders...")
         os.execute("glslc render.vert -o render_vert.spv")
         os.execute("glslc render.frag -o render_frag.spv")
@@ -47,22 +45,20 @@ local function compile_engine(platform)
 
         print("\n[2/3] Compiling libvibemath.so (AVX2 Worker Pool) ...")
         local linux_build_vibemath = "gcc -O3 -march=x86-64-v3 -shared -fPIC -pthread vibemath.c -o libvibemath.so -lm"
-        if not run_cmd(linux_build_vibemath) then 
-            print("ERROR: vibemath compilation failed!") 
-            os.exit(1) 
+        if not run_cmd(linux_build_vibemath) then
+            print("ERROR: vibemath compilation failed!")
+            os.exit(1)
         end
 
         print("\n[3/3] Compiling Vulkan-Engine (Monolithic AVX2 Host) ...")
         local linux_build_main = "gcc main.c -O3 -march=x86-64-v3 -Wl,-E -I/usr/include/luajit-2.1 -lglfw -lvulkan -lluajit-5.1 -lm -lpthread -o boot"
-        if not run_cmd(linux_build_main) then 
-            print("ERROR: main.c compilation failed!") 
-            os.exit(1) 
+        if not run_cmd(linux_build_main) then
+            print("ERROR: main.c compilation failed!")
+            os.exit(1)
         end
 
     elseif platform == "win" then
-        -- ==========================================
         -- WINDOWS BUILD PIPELINE
-        -- ==========================================
         print("\n[1/4] Compiling SPIR-V Shaders...")
         local glslc = VULKAN_SDK_PATH .. "/Bin/glslc.exe"
         os.execute(glslc .. " render.vert -o render_vert.spv")
@@ -71,9 +67,9 @@ local function compile_engine(platform)
 
         print("\n[2/4] Compiling vibemath.dll (AVX2 Worker Pool) ...")
         local win_build_vibemath = "gcc -O3 -march=x86-64-v3 -shared -pthread vibemath.c -o vibemath.dll -lm"
-        if not run_cmd(win_build_vibemath) then 
-            print("ERROR: vibemath.dll compilation failed!") 
-            os.exit(1) 
+        if not run_cmd(win_build_vibemath) then
+            print("ERROR: vibemath.dll compilation failed!")
+            os.exit(1)
         end
 
         print("\n[3/4] Compiling Vulkan-Engine.exe (Monolithic AVX2 Host) ...")
@@ -82,9 +78,9 @@ local function compile_engine(platform)
             'gcc main.c -O3 -march=x86-64-v3 -I"%s" -I"%s/Include" -L"%s/Lib" -lws2_32 -lglfw3 -lvulkan-1 -lluajit-5.1 -lm -o boot.exe',
             LUA_INC, VULKAN_SDK_PATH, VULKAN_SDK_PATH
         )
-        if not run_cmd(win_build_main) then 
-            print("ERROR: boot.exe compilation failed!") 
-            os.exit(1) 
+        if not run_cmd(win_build_main) then
+            print("ERROR: boot.exe compilation failed!")
+            os.exit(1)
         end
 
         -- ==========================================

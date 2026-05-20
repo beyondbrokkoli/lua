@@ -113,23 +113,16 @@ function GraphicsPipeline.Init(vk, core_state, width, height, pipelineLayout, co
     shaderStages[0].sType = 18; shaderStages[0].stage = 1; shaderStages[0].module = pVertModule[0]; shaderStages[0].pName = "main"
     shaderStages[1].sType = 18; shaderStages[1].stage = 16; shaderStages[1].module = pFragModule[0]; shaderStages[1].pName = "main"
 
-    -- ========================================================
-    -- 5. VERTEX INPUT (Mega-Buffer Empty Struct)
-    -- ========================================================
-    -- NEW PATCH
+    -- 0 Attributes, 0 Bindings! The Shader handles the geometry now.
     local vertexInputInfo = ffi.new("VkPipelineVertexInputStateCreateInfo")
     ffi.fill(vertexInputInfo, ffi.sizeof(vertexInputInfo))
-    vertexInputInfo.sType = 19 -- VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+    vertexInputInfo.sType = 19
     vertexInputInfo.vertexBindingDescriptionCount = 0
     vertexInputInfo.pVertexBindingDescriptions = nil
     vertexInputInfo.vertexAttributeDescriptionCount = 0
     vertexInputInfo.pVertexAttributeDescriptions = nil
 
-    -- ========================================================
     -- 6. FIXED FUNCTION STATES
-    -- ========================================================
-    -- NEW PATCH
-    -- Topology MUST be Point List since we are drawing particles
     local inputAssembly = ffi.new("VkPipelineInputAssemblyStateCreateInfo")
     ffi.fill(inputAssembly, ffi.sizeof(inputAssembly))
     inputAssembly.sType = 20
@@ -165,7 +158,8 @@ function GraphicsPipeline.Init(vk, core_state, width, height, pipelineLayout, co
     local colorBlendAttachment = ffi.new("VkPipelineColorBlendAttachmentState[1]")
     ffi.fill(colorBlendAttachment, ffi.sizeof(colorBlendAttachment))
     colorBlendAttachment[0].colorWriteMask = 15 -- R|G|B|A
-    colorBlendAttachment[0].blendEnable = 1 -- VK_TRUE
+    -- colorBlendAttachment[0].blendEnable = 1 -- VK_TRUE
+    colorBlendAttachment[0].blendEnable = 0 -- VK_FALSE ?
     colorBlendAttachment[0].srcColorBlendFactor = 6 -- SRC_ALPHA
     colorBlendAttachment[0].dstColorBlendFactor = 1 -- ONE
     colorBlendAttachment[0].colorBlendOp = 0 -- ADD
