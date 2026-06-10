@@ -1,0 +1,22 @@
+========================================
+ WEAVER ENGINE: V2 DEEP HISTORY TESTBED 
+========================================
+1. Host (Player 0) - Binds Port 50000
+2. Join (Player 1) - Connects to 127.0.0.1:50000 (Binds 50001)
+> [SYSTEM] Network Bound. Identity: P0. Establishing memory arena...
+[SYSTEM] Boot sequence complete. Entering strict FSM loop.
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames

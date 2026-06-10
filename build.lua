@@ -36,7 +36,7 @@ local function compile_engine(platform)
     print("[3/3] Compiling Headless Host (main.c)...")
     if platform == "linux" then
         local linux_build_main = "gcc c/main.c -O3 -march=x86-64-v3 -Wl,-E -I/usr/include/luajit-2.1 -lluajit-5.1 -lm -lpthread -o bin/boot"
-        local linux_build_main = "echo [3/4] Skipping main.c"
+        local linux_build_main = "echo [3/4] Skipping main.c ..."
         if not run_cmd(linux_build_main) then
             print(" [WARNING] Headless boot compilation failed or main.c missing.")
         else
@@ -48,6 +48,7 @@ local function compile_engine(platform)
             'gcc c/main.c -O3 -march=x86-64-v3 -I"%s" -lws2_32 -lluajit-5.1 -lm -o bin/boot.exe',
             LUA_INC
         )
+        local win_build_main = string.format("echo [3/4] Skipping main.c ...")
         if not run_cmd(win_build_main) then
             print(" [WARNING] Headless boot compilation failed or main.c missing.")
         else
