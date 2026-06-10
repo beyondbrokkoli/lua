@@ -1,36 +1,33 @@
 ========================================
- WEAVER ENGINE: V2 DEEP HISTORY TESTBED 
+ WEAVER ENGINE: 8-NODE DEEP HISTORY 
 ========================================
-1. Host (Player 0) - Binds Port 50000
-2. Join (Player 1) - Connects to 127.0.0.1:50000 (Binds 50001)
-> [SYSTEM] Network Bound. Identity: P0. Establishing memory arena...
-[SYSTEM] Boot sequence complete. Entering strict FSM loop.
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
-[HEARTBEAT] SimTick: 5 | NetHead: 5 | Confirmed: 0 | Missing: 5 frames
+Enter Node ID (0-7): 
+> [SYSTEM] Node 0 bound to :50000. Meshing topology...
+[SYSTEM] Topology Locked. Entering FSM loop.
+[HEARTBEAT] SimTick: 20 | NetHead: 19 | Confirmed: 16 | Missing: 4 frames
+[HEARTBEAT] SimTick: 80 | NetHead: 79 | Confirmed: 76 | Missing: 4 frames
+[HEARTBEAT] SimTick: 140 | NetHead: 139 | Confirmed: 136 | Missing: 4 frames
+[HEARTBEAT] SimTick: 200 | NetHead: 199 | Confirmed: 196 | Missing: 4 frames
+[HEARTBEAT] SimTick: 260 | NetHead: 259 | Confirmed: 256 | Missing: 4 frames
+[HEARTBEAT] SimTick: 318 | NetHead: 317 | Confirmed: 315 | Missing: 3 frames
+[HEARTBEAT] SimTick: 375 | NetHead: 374 | Confirmed: 373 | Missing: 2 frames
+[HEARTBEAT] SimTick: 422 | NetHead: 421 | Confirmed: 420 | Missing: 2 frames
+[HEARTBEAT] SimTick: 482 | NetHead: 481 | Confirmed: 480 | Missing: 2 frames
+[HEARTBEAT] SimTick: 542 | NetHead: 541 | Confirmed: 540 | Missing: 2 frames
+[HEARTBEAT] SimTick: 602 | NetHead: 601 | Confirmed: 600 | Missing: 2 frames
+[HEARTBEAT] SimTick: 662 | NetHead: 661 | Confirmed: 660 | Missing: 2 frames
+[HEARTBEAT] SimTick: 722 | NetHead: 721 | Confirmed: 720 | Missing: 2 frames
+[HEARTBEAT] SimTick: 783 | NetHead: 782 | Confirmed: 781 | Missing: 2 frames
+[HEARTBEAT] SimTick: 843 | NetHead: 842 | Confirmed: 841 | Missing: 2 frames
+[HEARTBEAT] SimTick: 903 | NetHead: 902 | Confirmed: 901 | Missing: 2 frames
+[HEARTBEAT] SimTick: 963 | NetHead: 962 | Confirmed: 961 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1023 | NetHead: 1022 | Confirmed: 1021 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1083 | NetHead: 1082 | Confirmed: 1081 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1143 | NetHead: 1142 | Confirmed: 1141 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1203 | NetHead: 1202 | Confirmed: 1201 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1263 | NetHead: 1262 | Confirmed: 1261 | Missing: 2 frames
+luajit: ./lua/fsm_core.lua:93: interrupted!
+stack traceback:
+	./lua/fsm_core.lua:93: in function 'tick_playing_state'
+	main.lua:124: in main chunk
+	[C]: at 0x55e5d7062e00

@@ -1,0 +1,33 @@
+========================================
+ WEAVER ENGINE: 8-NODE DEEP HISTORY 
+========================================
+Enter Node ID (0-7): 
+> [SYSTEM] Node 4 bound to :50004. Meshing topology...
+[SYSTEM] Topology Locked. Entering FSM loop.
+[HEARTBEAT] SimTick: 44 | NetHead: 43 | Confirmed: 41 | Missing: 3 frames
+[HEARTBEAT] SimTick: 104 | NetHead: 103 | Confirmed: 101 | Missing: 3 frames
+[HEARTBEAT] SimTick: 164 | NetHead: 163 | Confirmed: 161 | Missing: 3 frames
+[HEARTBEAT] SimTick: 224 | NetHead: 223 | Confirmed: 221 | Missing: 3 frames
+[HEARTBEAT] SimTick: 283 | NetHead: 282 | Confirmed: 280 | Missing: 3 frames
+[HEARTBEAT] SimTick: 343 | NetHead: 342 | Confirmed: 340 | Missing: 3 frames
+[HEARTBEAT] SimTick: 392 | NetHead: 392 | Confirmed: 389 | Missing: 3 frames
+[HEARTBEAT] SimTick: 448 | NetHead: 447 | Confirmed: 445 | Missing: 3 frames
+[HEARTBEAT] SimTick: 508 | NetHead: 507 | Confirmed: 505 | Missing: 3 frames
+[HEARTBEAT] SimTick: 568 | NetHead: 567 | Confirmed: 565 | Missing: 3 frames
+[HEARTBEAT] SimTick: 628 | NetHead: 627 | Confirmed: 625 | Missing: 3 frames
+[HEARTBEAT] SimTick: 688 | NetHead: 687 | Confirmed: 685 | Missing: 3 frames
+[HEARTBEAT] SimTick: 747 | NetHead: 746 | Confirmed: 745 | Missing: 2 frames
+[HEARTBEAT] SimTick: 807 | NetHead: 806 | Confirmed: 805 | Missing: 2 frames
+[HEARTBEAT] SimTick: 867 | NetHead: 866 | Confirmed: 865 | Missing: 2 frames
+[HEARTBEAT] SimTick: 927 | NetHead: 926 | Confirmed: 925 | Missing: 2 frames
+[HEARTBEAT] SimTick: 987 | NetHead: 986 | Confirmed: 985 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1048 | NetHead: 1047 | Confirmed: 1046 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1108 | NetHead: 1107 | Confirmed: 1106 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1167 | NetHead: 1166 | Confirmed: 1165 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1227 | NetHead: 1226 | Confirmed: 1225 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1287 | NetHead: 1286 | Confirmed: 1285 | Missing: 2 frames
+luajit: ./lua/fsm_core.lua:93: interrupted!
+stack traceback:
+	./lua/fsm_core.lua:93: in function 'tick_playing_state'
+	main.lua:124: in main chunk
+	[C]: at 0x55a6100cfe00

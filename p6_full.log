@@ -1,0 +1,28 @@
+========================================
+ WEAVER ENGINE: 8-NODE DEEP HISTORY 
+========================================
+Enter Node ID (0-7): 
+> [SYSTEM] Node 6 bound to :50006. Meshing topology...
+[SYSTEM] Topology Locked. Entering FSM loop.
+[HEARTBEAT] SimTick: 57 | NetHead: 56 | Confirmed: 53 | Missing: 4 frames
+[HEARTBEAT] SimTick: 117 | NetHead: 116 | Confirmed: 113 | Missing: 4 frames
+[HEARTBEAT] SimTick: 177 | NetHead: 176 | Confirmed: 173 | Missing: 4 frames
+[HEARTBEAT] SimTick: 237 | NetHead: 236 | Confirmed: 233 | Missing: 4 frames
+[HEARTBEAT] SimTick: 295 | NetHead: 294 | Confirmed: 292 | Missing: 3 frames
+[HEARTBEAT] SimTick: 355 | NetHead: 354 | Confirmed: 352 | Missing: 3 frames
+[HEARTBEAT] SimTick: 400 | NetHead: 400 | Confirmed: 399 | Missing: 1 frames
+[HEARTBEAT] SimTick: 460 | NetHead: 459 | Confirmed: 457 | Missing: 3 frames
+[HEARTBEAT] SimTick: 520 | NetHead: 519 | Confirmed: 517 | Missing: 3 frames
+[HEARTBEAT] SimTick: 580 | NetHead: 579 | Confirmed: 577 | Missing: 3 frames
+[HEARTBEAT] SimTick: 640 | NetHead: 639 | Confirmed: 637 | Missing: 3 frames
+[HEARTBEAT] SimTick: 702 | NetHead: 701 | Confirmed: 698 | Missing: 4 frames
+[HEARTBEAT] SimTick: 762 | NetHead: 761 | Confirmed: 759 | Missing: 3 frames
+[HEARTBEAT] SimTick: 822 | NetHead: 821 | Confirmed: 819 | Missing: 3 frames
+[HEARTBEAT] SimTick: 883 | NetHead: 882 | Confirmed: 880 | Missing: 3 frames
+[HEARTBEAT] SimTick: 943 | NetHead: 942 | Confirmed: 940 | Missing: 3 frames
+[HEARTBEAT] SimTick: 1003 | NetHead: 1002 | Confirmed: 1000 | Missing: 3 frames
+[HEARTBEAT] SimTick: 1063 | NetHead: 1062 | Confirmed: 1061 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1122 | NetHead: 1121 | Confirmed: 1120 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1181 | NetHead: 1180 | Confirmed: 1179 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1241 | NetHead: 1240 | Confirmed: 1239 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1301 | NetHead: 1300 | Confirmed: 1299 | Missing: 2 frames

@@ -1,0 +1,34 @@
+========================================
+ WEAVER ENGINE: 8-NODE DEEP HISTORY 
+========================================
+Enter Node ID (0-7): 
+> [SYSTEM] Node 1 bound to :50001. Meshing topology...
+[SYSTEM] Topology Locked. Entering FSM loop.
+[HEARTBEAT] SimTick: 26 | NetHead: 25 | Confirmed: 22 | Missing: 4 frames
+[HEARTBEAT] SimTick: 86 | NetHead: 85 | Confirmed: 82 | Missing: 4 frames
+[HEARTBEAT] SimTick: 146 | NetHead: 145 | Confirmed: 142 | Missing: 4 frames
+[HEARTBEAT] SimTick: 206 | NetHead: 205 | Confirmed: 202 | Missing: 4 frames
+[HEARTBEAT] SimTick: 264 | NetHead: 263 | Confirmed: 261 | Missing: 3 frames
+[HEARTBEAT] SimTick: 324 | NetHead: 323 | Confirmed: 321 | Missing: 3 frames
+[HEARTBEAT] SimTick: 381 | NetHead: 380 | Confirmed: 379 | Missing: 2 frames
+[HEARTBEAT] SimTick: 428 | NetHead: 427 | Confirmed: 426 | Missing: 2 frames
+[HEARTBEAT] SimTick: 488 | NetHead: 487 | Confirmed: 486 | Missing: 2 frames
+[HEARTBEAT] SimTick: 548 | NetHead: 547 | Confirmed: 546 | Missing: 2 frames
+[HEARTBEAT] SimTick: 608 | NetHead: 607 | Confirmed: 606 | Missing: 2 frames
+[HEARTBEAT] SimTick: 668 | NetHead: 667 | Confirmed: 666 | Missing: 2 frames
+[HEARTBEAT] SimTick: 728 | NetHead: 727 | Confirmed: 726 | Missing: 2 frames
+[HEARTBEAT] SimTick: 788 | NetHead: 787 | Confirmed: 786 | Missing: 2 frames
+[HEARTBEAT] SimTick: 848 | NetHead: 847 | Confirmed: 846 | Missing: 2 frames
+[HEARTBEAT] SimTick: 909 | NetHead: 908 | Confirmed: 907 | Missing: 2 frames
+[HEARTBEAT] SimTick: 969 | NetHead: 968 | Confirmed: 967 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1029 | NetHead: 1028 | Confirmed: 1027 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1089 | NetHead: 1088 | Confirmed: 1087 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1149 | NetHead: 1148 | Confirmed: 1146 | Missing: 3 frames
+[HEARTBEAT] SimTick: 1209 | NetHead: 1208 | Confirmed: 1207 | Missing: 2 frames
+[HEARTBEAT] SimTick: 1269 | NetHead: 1268 | Confirmed: 1267 | Missing: 2 frames
+luajit: ./lua/net_pump.lua:72: interrupted!
+stack traceback:
+	./lua/net_pump.lua:72: in function 'intercept_network'
+	./lua/fsm_core.lua:66: in function 'tick_playing_state'
+	main.lua:124: in main chunk
+	[C]: at 0x5614cb9cce00
