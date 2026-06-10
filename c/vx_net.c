@@ -177,7 +177,6 @@ EXPORT void vx_net_send(LockstepPacket* pkt) {
     }
 }
 
-
 // Add targeted routing so the pump can dynamically pack history per opponent
 EXPORT void vx_net_send_to(LockstepPacket* pkt, uint8_t target_peer) {
     if (g_net.sock == NET_INVALID || !pkt || target_peer >= 8) return;
