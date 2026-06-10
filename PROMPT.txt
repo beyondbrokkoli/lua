@@ -1,0 +1,144 @@
+i tried to get something going with the solution for structs.lua.
+
+i put your exact net_pump, fsm_core and the new structs.lua in a new repo. i want to import parts of my old build chain so compiling and keeping things in sync becomes "easier" (per build).
+
+THE NEW STRUCTS PROXY
+
+@@@ FILE: lua/structs.lua @@@
+
+-- structs.lua
+
+local ffi = require("ffi")
+
+
+-- V2 LOCKSTEP SSOT
+
+-- Strictly isolated network and FSM boundaries. Zero graphics API pollution.
+
+
+ffi.cdef[[
+
+    // THE DUMB PIPE PAYLOAD (Over-the-wire UDP Struct)
+
+    #pragma pack(push, 1)
+
+    typedef struct {
+
+        uint64_t session_token;
+
+        uint32_t frame_tick;         // The absolute head tick of the sender
+
+        uint32_t checksum_tick;      // Checksum consensus tick
+
+        uint32_t state_checksum;     // Checksum payload
+
+        uint32_t ack_tick;           // SENDER acknowledges simulating up to this tick from RECEIVER
+
+        uint32_t base_tick;          // Oldest tick in the dynamically packed history
+
+        uint8_t  player_id;
+
+        uint8_t  history_count;      // N frames packed (1 to 64)
+
+        uint8_t  inputs[64];         // Flat SOA array for inputs
+
+        int32_t  clicks[64];         // Flat SOA array for grid clicks
+
+    } LockstepPacket;
+
+    #pragma pack(pop)
+
+
+    // THE INTERNAL LUA MEMORY ARENA (Ouroboros 128-Slot Ring Buffer)
+
+    typedef struct {
+
+        uint32_t tick;
+
+        uint8_t  state;              // Predicted, Confirmed, or Empty
+
+        uint32_t state_checksum;
+
+        uint32_t remote_checksum;
+
+        uint8_t  remote_peer_id;
+
+
+        // Unpacked SOA state for local 8-player simulation
+
+        uint8_t  player_input[8];
+
+        int32_t  click_grid_idx[8];
+
+    } NetworkFrame;
+
+
+    typedef struct {
+
+        uint32_t head_tick;
+
+        uint32_t confirmed_tick;
+
+        uint8_t  is_rollback_active;
+
+        uint32_t rollback_target;
+
+        NetworkFrame frames[128];
+
+    } RollbackBuffer;
+
+]]
+
+
+return {}
+
+CURRENT REBASE STATUS
+
+[halim@archvbox lua]$ ls
+
+c  lua
+
+[halim@archvbox lua]$ pwd
+
+/home/halim/lua
+
+[halim@archvbox lua]$ ls -lr *
+
+lua:
+
+total 20
+
+-rw-r--r-- 1 halim halim 1609 Jun 10 14:22 structs.lua
+
+-rw-r--r-- 1 halim halim 5806 Jun 10 14:23 net_pump.lua
+
+-rw-r--r-- 1 halim halim 4134 Jun 10 14:23 fsm_core.lua
+
+
+c:
+
+total 12
+
+-rw-r--r-- 1 halim halim 8565 Jun 10 14:26 vx_net.c
+
+[halim@archvbox lua]$
+
+THE OLD VULKAN BUILD CHAIN (i want to rebase without vulkan but keep the ssot auto complete data struct sync, but also make sure it doesnt silently corrupt layout with padding, which is what we explicitly tried to avoid in the new structs.lua) (this old toolchain also contains an older version of structs.lua, the way it does it with the native tables has got me very far) (please steal what we need and leave out the rest)
+
+(oh and please update or delete the old struct definitions there that affect our networking, the are not following the new memory layout that we defined with your v2 updates)
+
+[halim@archvbox lua]$ cd ../
+
+[halim@archvbox ~]$ cd untitled/
+
+@@@ FILE: build.lua @@@
+
+local VULKAN_SDK_PATH = "C:/VulkanSDK/1.4.341.1"; local shaders = {; { src = "glsl/render.vert", dst = "bin/render_vert.spv" },; { src = "glsl/render.frag", dst = "bin/render_frag.spv" },; }; local function copy_file(source, destination); local infile = io.open(source, "rb"); if not infile then; print(" [ERROR] Could not find: " .. source); return false; end; local content = infile:read("*all"); infile:close(); local outfile = io.open(destination, "wb"); if not outfile then; print(" [ERROR] Could not write to: " .. destination); return false; end; outfile:write(content); outfile:close(); return true; end; local function run_cmd(cmd); local res = os.execute(cmd); return (res == true or res == 0); end; local function compile_engine(platform, build_target); print(" WEAVER LABORATORY BUILD AUTOMATION"); print(" Target Platform: " .. string.upper(platform)); if build_target == "shaders" then; print(" Mode: SHADERS ONLY"); else; print(" Mode: FULL BUILD"); end; print("\n[1/4] Generating C Header SSoT from Boilerplate..."); local gen_cmd = [[luajit -e "package.path='./lua/?.lua;'..package.path; require('registry_export').generate('glsl/registry.glsl', 'c/shared_structs.h')"]]; if not run_cmd(gen_cmd) then; print("ERROR: Failed to generate SSoT files!"); os.exit(1); end; print("\n[2/4] Compiling GLSL Shaders to SPIR-V..."); local glslc = (platform == "win") and (VULKAN_SDK_PATH .. "/Bin/glslc.exe") or "glslc"; for _, sh in ipairs(shaders) do; local cmd = string.format('%s %s -o %s', glslc, sh.src, sh.dst); if run_cmd(cmd) then; print(" |- Compiled: " .. sh.dst); else; print(" [ERROR] Failed to compile " .. sh.src); os.exit(1); end; end; if build_target == "shaders" then; print("\n[SUCCESS] Shader build complete! Ready for hot-reload.\n"); return; end; print("\n[3/4] Compiling Networking Backend (vx_net.c)..."); local net_cmd = ""; if platform == "linux" then; net_cmd = "gcc -shared -fPIC -O3 -march=x86-64 c/vx_net.c -o bin/libvx_net.so"; elseif platform == "win" then; net_cmd = "gcc -shared -O3 -march=x86-64-v3 c/vx_net.c -lws2_32 -o bin/vx_net.dll"; end; if not run_cmd(net_cmd) then; print("ERROR: vx_net compilation failed!"); os.exit(1); end; print(" |- Successfully compiled Networking Library."); print("\n[4/4] Compiling Laboratory Host (main.c) ..."); if platform == "linux" then; local linux_build_main = "gcc c/main.c -O3 -march=x86-64-v3 -Wl,-E -I/usr/include/luajit-2.1 -lglfw -lvulkan -lluajit-5.1 -lm -lpthread -o bin/boot"; if not run_cmd(linux_build_main) then; print("ERROR: c/main.c compilation failed!"); os.exit(1); end; elseif platform == "win" then; local LUA_INC = "C:/msys64/mingw64/include/luajit-2.1"; local win_build_main = string.format(; 'gcc c/main.c -O3 -march=x86-64-v3 -I"%s" -I"%s/Include" -L"%s/Lib" -lws2_32 -lglfw3 -lvulkan-1 -lluajit-5.1 -lm -o bin/boot.exe',; LUA_INC, VULKAN_SDK_PATH, VULKAN_SDK_PATH; ); if not run_cmd(win_build_main) then; print("ERROR: boot.exe compilation failed!"); os.exit(1); end; print("\n[Packing Windows Dependencies (DLLs)...]"); copy_file("C:/msys64/mingw64/bin/glfw3.dll", "bin/glfw3.dll"); copy_file("C:/msys64/mingw64/bin/lua51.dll", "bin/lua51.dll"); copy_file("C:/msys64/mingw64/bin/libwinpthread-1.dll", "bin/libwinpthread-1.dll"); print(" |- DLLs copied successfully."); else; print("ERROR: Unknown platform. Use 'linux' or 'win'."); os.exit(1); end; print("\n[SUCCESS] Laboratory build complete!\n"); end; local target_platform = arg[1]; local build_target = arg[2]; if target_platform ~= "linux" and target_platform ~= "win" then; print(" [FATAL] Missing or invalid target platform!"); print(" Usage: luajit build.lua <linux|win> [shaders]"); print(" Example: luajit build.lua win"); print(" Example: luajit build.lua win shaders"); os.exit(1); end; compile_engine(target_platform, build_target)
+
+@@@ FILE: lua/structs.lua @@@
+
+local ffi = require("ffi"); local M = {}; local struct_sizes = {; float = 4, uint32_t = 4, int32_t = 4,; uint64_t = 8, int64_t = 8,; uint16_t = 2, int16_t = 2,; uint8_t = 1, int8_t = 1; }; local function get_base_size(type_str); if struct_sizes[type_str] then return struct_sizes[type_str] end; if string.find(type_str, "*") then return 8 end; if string.find(type_str, "64") then return 8 end; if string.find(type_str, "32") or type_str == "float" then return 4 end; if string.find(type_str, "16") then return 2 end; if string.find(type_str, "8") then return 1 end; error("[FATAL] Unknown type size requested in SSoT Generator: " .. tostring(type_str)); end; M.specs = {; {; name = "mat4_t", glsl = "mat4", align = 16,; members = { { type = "float", name = "m", count = 16 } }; },; {; name = "RtsTileInstance", glsl = "RtsTileInstance", align = 16,; members = {; { type = "float", name = "px" },; { type = "float", name = "py" },; { type = "float", name = "pz" },; { type = "uint32_t", name = "tile_data" }; }; },; {; name = "PushConstants", glsl = "PushConstants", align = 16,; members = {; { type = "mat4_t", name = "viewProj" },; { type = "uint32_t", name = "aos_current_idx" },; { type = "uint32_t", name = "aos_prev_idx" },; { type = "float", name = "dt" },; { type = "float", name = "total_time" },; { type = "uint32_t", name = "target_state" },; { type = "uint32_t", name = "hover_idx" },; { type = "uint32_t", name = "flags" }; }; },; {; name = "DrawCommand", c_only = true, align = 8,; members = {; { type = "uint64_t", name = "pipeline_id" },; { type = "uint64_t", name = "descriptor_set" },; { type = "uint32_t", name = "index_count" },; { type = "uint32_t", name = "instance_count" },; { type = "uint32_t", name = "first_index" },; { type = "int32_t", name = "vertex_offset" },; { type = "uint32_t", name = "first_instance" },; { type = "uint16_t", name = "pc_offset" },; { type = "uint16_t", name = "pc_size" },; { type = "uint8_t", name = "push_constants", count = 128 },; { type = "int16_t", name = "scissor_x" },; { type = "int16_t", name = "scissor_y" },; { type = "uint16_t", name = "scissor_w" },; { type = "uint16_t", name = "scissor_h" },; { type = "uint8_t", name = "cull_mode" },; { type = "uint8_t", name = "depth_test" },; { type = "uint8_t", name = "depth_write" },; { type = "uint8_t", name = "depth_compare_op" },; { type = "uint8_t", name = "front_face" },; { type = "uint8_t", name = "topology" }; }; },; {; name = "RenderPacket", c_only = true, align = 64, force_align = true,; members = {; { type = "DrawCommand*", name = "draw_queue" },; { type = "uint32_t", name = "draw_count" },; { type = "uint64_t", name = "gfx_layout" },; { type = "uint64_t", name = "vertex_buffer" },; { type = "uint64_t", name = "index_buffer" },; { type = "uint64_t", name = "swapchain_image" },; { type = "uint64_t", name = "swapchain_view" },; { type = "uint64_t", name = "depth_image" },; { type = "uint64_t", name = "depth_view" },; { type = "uint32_t", name = "width" },; { type = "uint32_t", name = "height" }; }; },; {; name = "LockstepPacket", c_only = true, align = 8, force_align = true,; members = {; { type = "uint64_t", name = "session_token" },; { type = "uint8_t", name = "player_id" },; { type = "uint32_t", name = "frame_tick" },; { type = "uint32_t", name = "player_input" },; { type = "int32_t", name = "click_grid_idx" },; { type = "uint32_t", name = "state_checksum" },; { type = "uint32_t", name = "checksum_tick" },; { type = "uint32_t", name = "past_inputs", count = 7 },; { type = "int32_t", name = "past_clicks", count = 7 }; }; },; {; name = "RollbackFrame", c_only = true, align = 4, force_align = true,; members = {; { type = "uint32_t", name = "tick" },; { type = "uint32_t", name = "state_checksum" },; { type = "uint32_t", name = "player_input", count = 8 },; { type = "int32_t", name = "click_grid_idx", count = 8 },; { type = "uint8_t", name = "state" },; { type = "uint8_t", name = "remote_peer_id" },; { type = "uint32_t", name = "remote_checksum" }; }; },; {; name = "NetworkInboxPacket", c_only = true, align = 4, force_align = true,; members = {; { type = "uint8_t", name = "player_id" },; { type = "uint32_t", name = "frame_tick" },; { type = "uint32_t", name = "player_input" },; { type = "int32_t", name = "click_grid_idx" },; { type = "uint32_t", name = "state_checksum" },; { type = "uint32_t", name = "checksum_tick" }; }; },; {; name = "RollbackBuffer", c_only = true, align = 64, force_align = true,; members = {; { type = "RollbackFrame", name = "frames", count = 128 },; { type = "uint32_t", name = "head_tick" },; { type = "uint32_t", name = "confirmed_tick" },; { type = "uint32_t", name = "rollback_target" },; { type = "uint32_t", name = "is_rollback_active" }; }; },; {; name = "MultiverseArena", glsl = "MultiverseArena", align = 64, force_align = true,; members = {; { type = "uint16_t", name = "multiverse_terrain", count = {8, 262144} }; }; }; }; local cdef_builder = ""; for _, struct in ipairs(M.specs) do; local attr = struct.force_align and "__attribute__((packed, aligned("..struct.align..")))" or "__attribute__((packed))"; cdef_builder = cdef_builder .. string.format("typedef struct %s {\n", attr); local offset = 0; local pad_id = 0; for _, m in ipairs(struct.members) do; local m_size = get_base_size(m.type); local rem = offset % m_size; if rem ~= 0 then; local pad_bytes = m_size - rem; cdef_builder = cdef_builder .. string.format(" uint8_t _pad_%d[%d];\n", pad_id, pad_bytes); offset = offset + pad_bytes; pad_id = pad_id + 1; end; local arr = ""; local element_count = 1; if type(m.count) == "table" then; for _, dim in ipairs(m.count) do; arr = arr .. string.format("[%d]", dim); element_count = element_count * dim; end; elseif m.count then; arr = string.format("[%d]", m.count); element_count = m.count; end; cdef_builder = cdef_builder .. string.format(" %s %s%s;\n", m.type, m.name, arr); offset = offset + (m_size * element_count); end; local tail_rem = offset % struct.align; if tail_rem ~= 0 then; local tail_pad = struct.align - tail_rem; cdef_builder = cdef_builder .. string.format(" uint8_t _pad_tail[%d];\n", tail_pad); offset = offset + tail_pad; end; cdef_builder = cdef_builder .. "} " .. struct.name .. ";\n\n"; struct_sizes[struct.name] = offset; end; ffi.cdef(cdef_builder); return M
+
+@@@ FILE: lua/registry_export.lua @@@
+
+local cfg = require("config_engine"); local reg = require("registry_vk"); local structs_mod = require("structs"); local function get_sorted_keys(t); local keys = {}; for k in pairs(t) do table.insert(keys, k) end; table.sort(keys); return keys; end; local function map_glsl_type(type_str); if type_str == "float" then return "float" end; if string.find(type_str, "mat4") then return "mat4" end; return "uint"; end; local function generate_ssot(glsl_path, c_header_path); local glsl = io.open(glsl_path, "w"); local c_hdr = io.open(c_header_path, "w"); glsl:write("// AUTO-GENERATED SSoT - DO NOT MODIFY\n"); glsl:write("#ifndef REGISTRY_GLSL\n#define REGISTRY_GLSL\n\n"); c_hdr:write("// AUTO-GENERATED SSoT - DO NOT MODIFY\n"); c_hdr:write("#pragma once\n#include <stdint.h>\n\n"); glsl:write("// --- CONSTANTS ---\n"); c_hdr:write("// --- ENGINE CONSTANTS ---\n"); local mode_keys = get_sorted_keys(cfg.mode); for _, k in ipairs(mode_keys) do; glsl:write(string.format("const uint MODE_%s = %dU;\n", string.upper(k), cfg.mode[k])); c_hdr:write(string.format("#define MODE_%s %d\n", string.upper(k), cfg.mode[k])); end; local cfg_keys = get_sorted_keys(cfg.cfg); for _, k in ipairs(cfg_keys) do; glsl:write(string.format("const uint CFG_%s = %dU;\n", string.upper(k), cfg.cfg[k])); c_hdr:write(string.format("#define CFG_%s %d\n", string.upper(k), cfg.cfg[k])); end; local net_keys = get_sorted_keys(cfg.net_state); for _, k in ipairs(net_keys) do; c_hdr:write(string.format("#define FRAME_STATE_%s %d\n", string.upper(k), cfg.net_state[k])); end; local world_keys = get_sorted_keys(cfg.world); for _, k in ipairs(world_keys) do; local val = cfg.world[k]; if type(val) == "number" then; if math.floor(val) == val then; glsl:write(string.format("const uint WORLD_%s = %dU;\n", string.upper(k), val)); c_hdr:write(string.format("#define WORLD_%s %d\n", string.upper(k), val)); else; glsl:write(string.format("const float WORLD_%s = %.1f;\n", string.upper(k), val)); c_hdr:write(string.format("#define WORLD_%s %.1ff\n", string.upper(k), val)); end; end; end; local dynamic_sizes = {; float = 4, uint32_t = 4, int32_t = 4,; uint64_t = 8, int64_t = 8,; uint16_t = 2, int16_t = 2,; uint8_t = 1, int8_t = 1; }; local function resolve_member_size(type_str); if dynamic_sizes[type_str] then return dynamic_sizes[type_str] end; if string.find(type_str, "*") then return 8 end; if string.find(type_str, "64") then return 8 end; if string.find(type_str, "32") or type_str == "float" then return 4 end; if string.find(type_str, "16") then return 2 end; if string.find(type_str, "8") then return 1 end; return 64; end; glsl:write("\n// --- std430 SSBO DEFINITIONS ---\n"); for _, struct in ipairs(structs_mod.specs) do; local attr = struct.force_align and "__attribute__((packed, aligned("..struct.align..")))" or "__attribute__((packed))"; c_hdr:write(string.format("typedef struct %s {\n", attr)); if not struct.c_only then; glsl:write(string.format("struct %s {\n", struct.name)); end; local offset = 0; local pad_id = 0; for _, m in ipairs(struct.members) do; local m_size = resolve_member_size(m.type); local rem = offset % m_size; if rem ~= 0 then; local pad_bytes = m_size - rem; c_hdr:write(string.format(" uint8_t _pad_auto_%d[%d];\n", pad_id, pad_bytes)); if not struct.c_only then; glsl:write(string.format(" // Engine injected %d pad bytes for std430\n", pad_bytes)); end; offset = offset + pad_bytes; pad_id = pad_id + 1; end; local arr_str = ""; local element_count = 1; if type(m.count) == "table" then; for _, dim in ipairs(m.count) do; arr_str = arr_str .. string.format("[%d]", dim); element_count = element_count * dim; end; elseif m.count then; arr_str = string.format("[%d]", m.count); element_count = m.count; end; c_hdr:write(string.format(" %s %s%s;\n", m.type, m.name, arr_str)); if not struct.c_only then; local glsl_type = map_glsl_type(m.type); glsl:write(string.format(" %s %s%s;\n", glsl_type, m.name, arr_str)); end; offset = offset + (m_size * element_count); end; local tail_rem = offset % struct.align; if tail_rem ~= 0 then; local tail_pad = struct.align - tail_rem; c_hdr:write(string.format(" uint8_t _pad_tail[%d];\n", tail_pad)); if not struct.c_only then; glsl:write(string.format(" // Tail padded by %d bytes\n", tail_pad)); end; offset = offset + tail_pad; end; c_hdr:write("} " .. struct.name .. ";\n\n"); if not struct.c_only then; glsl:write("};\n\n"); end; dynamic_sizes[struct.name] = offset; end; c_hdr:write("#ifdef VX_ENABLE_VULKAN_STRUCTS\n"); c_hdr:write(reg.c_vk_structs); c_hdr:write("\n#endif // VX_ENABLE_VULKAN_STRUCTS\n"); glsl:write("#endif // REGISTRY_GLSL\n"); glsl:close(); c_hdr:close(); print("[LUA SSOT] Alignment Manifesto Enforced. Header and GLSL Generated."); end; return { generate = generate_ssot }
