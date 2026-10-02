@@ -47,6 +47,7 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     let mut needs_tbl_free_except_n_decl = false;
     let mut needs_tbl_get_decl = false;
     let mut needs_tbl_set_decl = false;
+    let mut needs_str_len_decl = false;
     let mut needs_sys_alloc_count_decl = false;
     let mut needs_hdr_md = false;
     let mut ts = 0usize;
@@ -125,6 +126,13 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                         target.id,
                         val.len() + 1,
                         g
+                    ));
+                }
+                Instruction::StrLen { target, s } => {
+                    needs_str_len_decl = true;
+                    code.push_str(&format!(
+                        "  %v{} = call i64 @glm_str_len(ptr %v{})\n",
+                        target.id, s.id
                     ));
                 }
                 Instruction::Move(m) => emit_move(m, &mut code),
@@ -369,6 +377,9 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     }
     if needs_tbl_set_decl {
         head.push_str("declare void @glm_tbl_set(ptr, i64, ptr)\n");
+    }
+    if needs_str_len_decl {
+        head.push_str("declare i64 @glm_str_len(ptr)\n");
     }
     if needs_sys_alloc_count_decl {
         head.push_str("declare i64 @sys_alloc_count()\n");

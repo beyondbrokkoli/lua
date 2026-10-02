@@ -10,7 +10,7 @@ use crate::ir::{
 use crate::shape::{ArmFreeEntry, DoExitFree, Keep, LayoutVerdict, ShapeFacts, TagSrc};
 use bridges::{
     NumPair, NumSingle, OrdPair, bool_of, elem_of_ty, int_of, num_pair, num_single, ord_pair,
-    phi_of, phi_push, ptr_of,
+    phi_of, phi_push, ptr_of, str_of,
 };
 use glm_rt::{signal, trace};
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,7 +82,7 @@ pub struct IrLowerer<'a> {
     fills: FillCtxs,
     handles: FreeHandles,
     shape: &'a ShapeFacts,
-    // Row-housing keeps (stage 4): a ghost stored into a cell, with
+    // Row-housing keeps: a ghost stored into a cell, with
     // the store's value register captured — an SSA register holds the
     // row pointer for the whole function, so origin-side frees skip
     // the housed row by pointer identity whenever they run.
@@ -487,7 +487,15 @@ impl<'a> IrLowerer<'a> {
             match self.lower_stmt(stmt) {
                 Ok(_) => {}
                 Err(e) => {
-                    self.diagnostics.push(e.0);
+                    let line = self
+                        .shape
+                        .stmt_lines
+                        .get(&(stmt as *const Stmt))
+                        .copied();
+                    self.diagnostics.push(match line {
+                        Some(l) => format!("line {l}: {}", e.0),
+                        None => e.0,
+                    });
                     signal!(trace::TRACE_GHOST_BAIL_LOWERER);
                     break;
                 }
@@ -1883,6 +1891,34 @@ impl<'a> IrLowerer<'a> {
                     })
                 }
                 UnOp::Len => {
+                    // `#"literal"` folds: the length rides the source.
+                    if let Expr::String(s) = expr.as_ref() {
+                        self.emit(Instruction::LoadInt {
+                            target: Reg::new(reg),
+                            val: s.len() as i64,
+                        });
+                        return Ok(TypedReg {
+                            reg: AnyReg::Int(Reg::new(reg)),
+                            ty: StaticType::Integer,
+                        });
+                    }
+                    // `#s` on a string name: strlen over the intern. A
+                    // pure SSA read — no register allocation, so `#t`
+                    // numbering below stays byte-identical.
+                    if let Expr::Identifier(name) = expr.as_ref() {
+                        let local = self.read_var(name)?;
+                        if matches!(local.ty, StaticType::String) {
+                            let s_reg = str_of(local.reg)?;
+                            self.emit(Instruction::StrLen {
+                                target: Reg::new(reg),
+                                s: s_reg,
+                            });
+                            return Ok(TypedReg {
+                                reg: AnyReg::Int(Reg::new(reg)),
+                                ty: StaticType::Integer,
+                            });
+                        }
+                    }
                     let site = match expr.as_ref() {
                         Expr::Identifier(name) => {
                             let r = self.read_var(name)?.reg;

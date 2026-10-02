@@ -924,6 +924,13 @@ pub enum Instruction {
         target: Reg<Str>,
         val: String,
     },
+    // `#s`: the length of a NUL-terminated interned string, read from
+    // its pointer (a strlen call — the intern shares one address per
+    // literal, so no per-call heap traffic).
+    StrLen {
+        target: Reg<Int>,
+        s: Reg<Str>,
+    },
     LoadNull {
         target: Reg<Ptr>,
     },
@@ -1005,6 +1012,7 @@ impl Instruction {
             Instruction::LoadFloat { target, .. } => Some(target.id),
             Instruction::LoadBool { target, .. } => Some(target.id),
             Instruction::LoadString { target, .. } => Some(target.id),
+            Instruction::StrLen { target, .. } => Some(target.id),
             Instruction::LoadNull { target } => Some(target.id),
             Instruction::BindArgs { target } => Some(target.id),
             Instruction::TableNew { target, .. } => Some(target.id),

@@ -8,18 +8,73 @@ pub struct ParseError(pub String);
 
 pub const MAX_EXPR_DEPTH: usize = 1024;
 
+/// Token stream with byte offsets: `last_off` is the offset of the most
+/// recently consumed token (the error-line anchor when the stream is
+/// exhausted).
+struct Tokens<'a> {
+    inner: Peekable<std::vec::IntoIter<(Token<'a>, usize)>>,
+    last_off: usize,
+}
+
+impl<'a> Tokens<'a> {
+    fn next(&mut self) -> Option<Token<'a>> {
+        self.inner.next().map(|(t, off)| {
+            self.last_off = off;
+            t
+        })
+    }
+    fn peek(&mut self) -> Option<&Token<'a>> {
+        self.inner.peek().map(|(t, _)| t)
+    }
+    fn peek_off(&mut self) -> Option<usize> {
+        self.inner.peek().map(|(_, off)| *off)
+    }
+}
+
 pub struct Parser<'a> {
-    tokens: Peekable<std::vec::IntoIter<Token<'a>>>,
+    tokens: Tokens<'a>,
     pub diagnostics: Vec<String>,
     depth: usize,
+    // Byte offsets of every newline in the source, for offset -> line.
+    newlines: Vec<usize>,
+    // Pre-order line sequences. stmt_line_seq is indexed by the
+    // statement pre-order of analysis::build_stmt_lines; ctor_line_seq
+    // by site id (analysis::number_sites assigns ids in the same
+    // pre-order as `{` tokens appear in the source).
+    pub stmt_line_seq: Vec<usize>,
+    pub ctor_line_seq: Vec<usize>,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: Vec<Token<'a>>) -> Self {
+    pub fn new(tokens: Vec<(Token<'a>, usize)>, source: &str) -> Self {
         Self {
-            tokens: tokens.into_iter().peekable(),
+            tokens: Tokens {
+                inner: tokens.into_iter().peekable(),
+                last_off: 0,
+            },
             diagnostics: Vec::new(),
             depth: 0,
+            newlines: source
+                .bytes()
+                .enumerate()
+                .filter(|(_, b)| *b == b'\n')
+                .map(|(i, _)| i)
+                .collect(),
+            stmt_line_seq: Vec::new(),
+            ctor_line_seq: Vec::new(),
+        }
+    }
+
+    fn line_of(&self, off: usize) -> usize {
+        1 + self.newlines.partition_point(|&n| n < off)
+    }
+
+    /// The line a parse error is reported at: the upcoming token's line
+    /// when one exists, else the last consumed token's.
+    fn err_line(&mut self) -> usize {
+        match self.tokens.peek_off() {
+            Some(off) => self.line_of(off),
+            None => self.line_of(self.tokens.last_off),
         }
     }
 
@@ -40,7 +95,8 @@ impl<'a> Parser<'a> {
             match self.parse_stmt() {
                 Ok(stmt) => stmts.push(stmt),
                 Err(e) => {
-                    self.diagnostics.push(e.0);
+                    let line = self.err_line();
+                    self.diagnostics.push(format!("line {line}: {}", e.0));
                     glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_GHOST_BAIL_PARSER);
                     break;
                 }
@@ -50,6 +106,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
+        let off = self.tokens.peek_off().unwrap_or(self.tokens.last_off);
+        self.stmt_line_seq.push(self.line_of(off));
+        self.parse_stmt_inner()
+    }
+
+    fn parse_stmt_inner(&mut self) -> Result<Stmt, ParseError> {
         match self.tokens.peek().cloned() {
             Some(Token::Local) => {
                 self.tokens.next();
@@ -227,6 +289,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_elseif_chain(&mut self) -> Result<Stmt, ParseError> {
+        let off = self.tokens.peek_off().unwrap_or(self.tokens.last_off);
+        self.stmt_line_seq.push(self.line_of(off));
         self.expect(Token::ElseIf)?;
         let condition = self.parse_expr()?;
         self.expect(Token::Then)?;
@@ -511,6 +575,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_table_ctor(&mut self) -> Result<Expr, ParseError> {
+        // Pre-order ctor line (the `{` just consumed); site ids in
+        // analysis::number_sites follow this same order.
+        self.ctor_line_seq
+            .push(self.line_of(self.tokens.last_off));
         if matches!(self.tokens.peek(), Some(Token::RightBrace)) {
             self.tokens.next();
             glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_PARSE_TBL_EMPTY);

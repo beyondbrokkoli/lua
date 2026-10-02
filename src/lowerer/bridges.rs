@@ -2,7 +2,7 @@ use super::{IrLowerer, LowerError};
 use crate::ast::StaticType;
 use crate::ir::{
     AnyReg, BlockId, Bool, Byte, CellRepr, CellTy, CellVal, CmpRegs, CmpRepr, Float, Instruction,
-    Int, MoveRegs, NumRegs, NumRegsRhs, NumRepr, PhiRegs, PhiRepr, Ptr, Reg, RegKind,
+    Int, MoveRegs, NumRegs, NumRegsRhs, NumRepr, PhiRegs, PhiRepr, Ptr, Reg, RegKind, Str,
 };
 
 pub(super) fn elem_of_ty(ty: &StaticType) -> Result<StaticType, LowerError> {
@@ -41,6 +41,13 @@ pub(super) fn ptr_of(r: AnyReg) -> Result<Reg<Ptr>, LowerError> {
     match r {
         AnyReg::Ptr(x) => Ok(x),
         _ => Err(repr_mismatch("a table-header operand position")),
+    }
+}
+
+pub(super) fn str_of(r: AnyReg) -> Result<Reg<Str>, LowerError> {
+    match r {
+        AnyReg::Str(x) => Ok(x),
+        _ => Err(repr_mismatch("a String operand position")),
     }
 }
 

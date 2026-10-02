@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, PartialEq, Debug)]
 pub enum Keep {
     Name(String),
-    /// Stage 4 (row housing): the ghost's store-time value register.
+    /// A housed row's store-time value register.
     #[allow(dead_code)]
     Ghost(usize),
 }
@@ -147,7 +147,7 @@ pub struct ShapeFacts {
     /// their pre-update registers, each with its borrower keeps (the
     /// displaced value frees around live borrowers of its subtree).
     pub rebind_frees: BTreeMap<*const Stmt, BTreeMap<String, Vec<Keep>>>,
-    // === mixed-join arm plans (the else-arm leak fix) ===
+    // === mixed-join arm plans ===
     /// If statements needing a tag phi (one Bool per join: true = the
     /// then arm ran) and the then arm's class (true = that arm's plan
     /// frees nothing).
@@ -193,6 +193,10 @@ pub struct ShapeFacts {
     /// Call expr -> its function's expr, so the lowerer inlines the
     /// right body at the right site (checker).
     pub call_defs: BTreeMap<*const Expr, *const Expr>,
+    /// Diagnostic anchors from the parser: statement pointer -> line,
+    /// ctor site id -> line (parallel to `sites`' id space).
+    pub stmt_lines: BTreeMap<*const Stmt, usize>,
+    pub ctor_lines: Vec<usize>,
     pub diagnostics: Vec<String>,
 }
 
@@ -244,9 +248,10 @@ impl ShapeFacts {
                         )
                     {
                         signal!(trace::TRACE_ANALYZE_MISSING_VALUE);
+                        let line = self.ctor_lines[row];
                         self.diagnostics.push(format!(
-                            "Type Error: a row of '{name}' is read before it is ever \
-                             given a value (table site #{row})"
+                            "line {line}: Type Error: a row of '{name}' is read before it is \
+                             ever given a value (table site #{row})"
                         ));
                     }
                     if let Some(kids) = self.cell_children.get(&row) {

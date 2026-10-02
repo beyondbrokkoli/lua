@@ -96,11 +96,15 @@ pub enum Token<'a> {
     #[regex(r#""[^"]*""#, |lex| {
         let s = lex.slice();
         if s.contains('\0') {
+            let off = lex.span().start;
+            let line = 1 + lex.source().as_bytes()[..off]
+                .iter()
+                .filter(|b| **b == b'\n')
+                .count();
             panic!(
-                "Lexer error: embedded NUL byte in string literal at byte {} \
+                "line {line}: Lexer error: embedded NUL byte in string literal at byte {off} \
                  — glm strings are NUL-terminated, so the literal would \
-                 silently truncate at print time",
-                lex.span().start
+                 silently truncate at print time"
             );
         }
         Some(s)

@@ -1,34 +1,20 @@
 #!/usr/bin/env lua
+-- run.lua — the bench: build + clippy, the corpus, lock byte-identity.
+-- Workflow, pin grammar, and verification signatures: README.md.
 dofile("conf.lua")
 
 local function usage()
     print([[
-Runs cargo build + clippy, then the whole
-corpus, then byte-identity of every case's out.ll against existing
-IR baselines in ]] .. LOCK_DIR .. [[.
-reset.lua is the only writer.
-
-Every case classifies itself with pin
-comments; the directory is the listing.
-  -- EXPECT: <line>            expected stdout line, in order
-  -- EXPECT_BUILD_FAIL: <text> compile must fail with this text
-  -- EXPECT_PANIC: <text>      the script must panic with this text
-  -- ARGS: <ints...>           integer boundary arguments
-
-One invocation compiles AND runs (the product is ./libglm_out.so and
-the compiler process is its boundary host): a positive case must exit
-0, a negative case must die in the front, a panic case must link and
-then die in the script.
-
-BYTE DRIFT dumps each drifted IR diff.
-Relock with (lua reset.lua run).
-
-Usage: lua run.lua run]])
+Usage: lua run.lua [run [substr]...] | probe <file.lua>
+  (no args)   run the whole corpus
+  run         run the whole corpus
+  run SUB...  run only cases whose name contains any SUB
+  probe FILE  run one file, archive out.ll + plates to target/probe/]])
 end
 
 local ARGS = {...}
-if #ARGS == 0 then usage() os.exit(0) end
-if ARGS[1] ~= "run" then
+local mode = ARGS[1] or "run"
+if mode ~= "run" and mode ~= "probe" then
     usage()
     io.stderr:write("\nunknown argument: " .. ARGS[1] .. "\n")
     os.exit(1)
@@ -66,12 +52,9 @@ local function split_lines(s)
 end
 
 -- EXPECT pins: whole-stdout equality — lines in order, nothing extra.
--- Only enforced when the case carries at least one EXPECT pin; a
--- pinless positive case owes nothing about its stdout (it still gets
--- compile/run/lock coverage — the pin grammar's OPTIONAL promise).
--- The compiler's own success note is already filtered out
--- (script_stdout); what remains must be exactly the script's output.
--- Returns nil on match, else the first divergence.
+-- Only enforced when the case carries at least one EXPECT pin; a pinless
+-- positive case still gets compile/run/lock coverage. Returns nil on
+-- match, else the first divergence.
 local function expect_mismatch(out, pins)
     local got = split_lines(out)
     for i = 1, math.max(#pins, #got) do
@@ -125,7 +108,7 @@ local function diff_against_lock(name)
         return "lock ✓"
     end
     lock_drifted = lock_drifted + 1
-    report_fail("lock", name, "BYTE DRIFT vs " .. LOCK_DIR .. " — user verifies drift by hand, relock only at a milestone:\n" .. cap(d, 60))
+    report_fail("lock", name, "BYTE DRIFT vs " .. LOCK_DIR .. " — relock only at a milestone:\n" .. cap(d, 60))
     return "lock ✗"
 end
 
@@ -146,15 +129,63 @@ do
     print("  ✓ clippy clean (-D warnings)")
 end
 
+-- probe: one arbitrary file through the same capture pipeline, archiving
+-- the products (out.ll and both trace plates) under target/probe/ so
+-- they survive the next invocation.
+if mode == "probe" then
+    local file = ARGS[2]
+    if not file then usage() os.exit(1) end
+    local ok = run_case(file, nil, true)
+    local compiled = compile_succeeded()
+    local name = file:gsub("%.lua$", ""):gsub("(.*/)", "")
+    local dir = "target/probe"
+    os.execute("mkdir -p " .. dir)
+    if compiled then copy_file("out.ll", dir .. "/" .. name .. ".ll") end
+    copy_file(".glm_trace.bin", dir .. "/" .. name .. ".bin")
+    copy_file(".glm_rt_trace.bin", dir .. "/" .. name .. ".rt.bin")
+    print("\n== PROBE " .. file .. " ==")
+    print("  compile: " .. (compiled and "ok" or ("FAILED — " .. first_error(ERR))))
+    print("  exit   : " .. (ok and "0" or "nonzero"))
+    local out = script_stdout()
+    if out ~= "" then print("  stdout :\n" .. out) end
+    print("  plates : " .. dir .. "/" .. name .. ".bin (.rt.bin sidecar"
+        .. (compiled and ", .ll IR" or "") .. ") — decode: python3 plate.py <plate>")
+    os.exit(0)
+end
+
+-- run: optional substring filters over case names
+local filters = {}
+for i = 2, #ARGS do table.insert(filters, ARGS[i]) end
+local function selected(name)
+    if #filters == 0 then return true end
+    for _, s in ipairs(filters) do
+        if name:find(s, 1, true) then return true end
+    end
+    return false
+end
+
 -- corpus
 local corpus = scan_corpus()
+local total = #corpus.positive + #corpus.negative + #corpus.panic
+if #filters > 0 then
+    local function keep(list)
+        local t = {}
+        for _, n in ipairs(list) do if selected(n) then table.insert(t, n) end end
+        return t
+    end
+    corpus.positive = keep(corpus.positive)
+    corpus.negative = keep(corpus.negative)
+    corpus.panic = keep(corpus.panic)
+end
 print("\n== CORPUS (self-classified from pin comments) ==")
 for _, b in ipairs(corpus.bad) do report_fail("corpus", b[1], b[2]) end
 for _, o in ipairs(corpus.odd) do
     report_notice(o[1] .. " — pin prefixes outside the grammar: " .. o[2])
 end
-print(string.format("  %d positive / %d negative / %d panic",
-    #corpus.positive, #corpus.negative, #corpus.panic))
+local matched = #corpus.positive + #corpus.negative + #corpus.panic
+print(string.format("  %d positive / %d negative / %d panic%s",
+    #corpus.positive, #corpus.negative, #corpus.panic,
+    #filters > 0 and string.format("  (filtered: %d/%d by '%s')", matched, total, table.concat(filters, "' '")) or ""))
 
 -- positive
 print("\n== POSITIVE (compile, run, optional EXPECT, lock) ==")
@@ -233,9 +264,10 @@ for _, name in ipairs(corpus.panic) do
     end
 end
 
--- lock wrap
+-- lock wrap (orphan scan is whole-corpus; a filtered run sees strays
+-- everywhere and would cry wolf)
 print("\n== LOCK (byte-identity vs " .. LOCK_DIR .. "/) ==")
-do
+if #filters == 0 then
     local expected = {}
     for _, name in ipairs(corpus.positive) do expected[lock_name(name)] = true end
     for _, name in ipairs(corpus.panic) do expected[lock_name(name)] = true end
@@ -246,9 +278,9 @@ do
         end
     end
     p:close()
-    print(string.format("  lock: %d identical / %d drifted / %d errored / %d missing",
-        lock_identical, lock_drifted, lock_errored, lock_missing))
 end
+print(string.format("  lock: %d identical / %d drifted / %d errored / %d missing",
+    lock_identical, lock_drifted, lock_errored, lock_missing))
 
 -- summary
 print("\n== RESULT ==")
@@ -261,4 +293,8 @@ if #failed > 0 then
     for _, f in ipairs(failed) do print(string.format("   [%s] %s", f.section, f.name)) end
     os.exit(1)
 end
-print(c(GREEN, "  ALL GREEN — invariants intact."))
+if #filters > 0 then
+    print(c(YELLOW, string.format("  GREEN (filtered %d/%d) — a full `lua run.lua run` is still owed", matched, total)))
+else
+    print(c(GREEN, "  ALL GREEN — invariants intact."))
+end

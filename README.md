@@ -38,7 +38,30 @@ as is passing `arg` to a function that moves its parameter or returns it
 into a move) — read its cells (`arg[i]`) instead; `return arg` is fine.
 
 ```sh
-./target/release/glm ~/interop_alloc_arg_header.lua 4 2
+./target/release/glm example.lua 4 2
+```
+
+## Tests
+
+```sh
+lua run.lua                # build + clippy, whole corpus, lock byte-identity
+lua run.lua run STR ...    # only cases whose name contains any STR
+lua run.lua probe FILE     # one arbitrary file; archives to target/probe/
+lua reset.lua              # overwrite diff target
+```
+
+Every case classifies itself with magic comments
+and the directory is the listing.
+
+```lua
+-- EXPECT: <line>            expected stdout line, in order (OPTIONAL:
+                             without EXPECT pins the case still gets
+                             compile/run/lock coverage)
+-- EXPECT_BUILD_FAIL: <text> compile must fail; stderr contains <text>
+-- EXPECT_PANIC: <text>      build passes, the script dies with <text>
+                             on stderr
+-- ARGS: <ints...>           integer boundary arguments (become the
+                             script's `arg` table cells)
 ```
 
 ### Inline Functions

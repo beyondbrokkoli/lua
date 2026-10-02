@@ -1,0 +1,885 @@
+use super::*;
+impl Analyzer {
+    pub(super) fn probe(&mut self, rec: Gate, slot: u8) {
+        if rec.on() {
+            trace::compiler_trace_signal(slot);
+        } else {
+            self.walk.conv_fires.insert(slot);
+        }
+    }
+
+    pub(super) fn walk_stmts(&mut self, rec: Gate, stmts: &[Stmt]) {
+        for s in stmts {
+            if let Err(err) = self.walk_stmt(rec, s) {
+                signal!(rec.on(), trace::TRACE_GHOST_BAIL);
+                let line = self.stmt_lines.get(&(s as *const Stmt)).copied();
+                self.ledger.diagnostics.push(match line {
+                    Some(l) => format!("line {l}: {}", err.0),
+                    None => err.0,
+                });
+                return;
+            }
+        }
+    }
+
+    pub(super) fn walk_stmt(&mut self, rec: Gate, stmt: &Stmt) -> Result<(), ShapeError> {
+        match stmt {
+            Stmt::LocalDecl { names, exprs } => {
+                let mut sets = Vec::with_capacity(names.len());
+                let mut moved_srcs: Vec<(usize, String)> = Vec::new();
+                // Bind function names before walking their bodies so a
+                // recursive call resolves here (and the checker reports
+                // the recursion with its own message). Non-function
+                // bindings tombstone the name so shadowing hides any
+                // outer function.
+                for (name, expr) in names.iter().zip(exprs.iter()) {
+                    let ptr = match expr {
+                        Expr::Function { .. } => Some(expr as *const Expr),
+                        _ => None,
+                    };
+                    self.declare_fn_binding(name, ptr);
+                }
+                for name in &names[exprs.len()..] {
+                    self.declare_fn_binding(name, None);
+                }
+                let note_move = |an: &mut Self,
+                                 src: &str,
+                                 target: &str,
+                                 moved: &mut Vec<(usize, String)>|
+                 -> Result<(), ShapeError> {
+                    if src == target {
+                        return Ok(());
+                    }
+                    let (d, bind) = an.resolve(rec, src)?;
+                    an.record_moved_param(src);
+                    an.check_boundary_pin(&bind, src)?;
+                    if matches!(bind.ty, Tbl(_)) {
+                        if moved.iter().any(|(_, m)| m == src) {
+                            return Err(ShapeError(format!(
+                                "Lifetime Error: '{src}' is moved more than once — one table \
+                                 value has exactly one receiving binding"
+                            )));
+                        }
+                        moved.push((d, src.to_string()));
+                    }
+                    Ok(())
+                };
+                for (name, expr) in names.iter().zip(exprs.iter()) {
+                    if let Expr::Identifier(src) = expr {
+                        note_move(self, src, name, &mut moved_srcs)?;
+                    }
+                }
+                for (idx, expr) in exprs.iter().enumerate() {
+                    if matches!(expr, Expr::Nil) {
+                        signal!(rec.on(), trace::TRACE_BIND_SCALAR);
+                        sets.push(TableShape {
+                            ty: Pending,
+                            layout: LayoutVerdict::default(),
+                            aliases: BTreeSet::from([NULL_ROOT]),
+                            lineage: BTreeMap::new(),
+                        });
+                    } else if let Expr::Function { params, body } = expr {
+                        // The def-site walk: ownership facts and return
+                        // shape, frees keyed (stmt, 2 + idx) so several
+                        // functions may share one `local` line.
+                        self.walk_fn_def(
+                            rec,
+                            expr as *const Expr,
+                            params,
+                            body,
+                            (stmt as *const Stmt, 2 + idx as u8),
+                        )?;
+                        sets.push(TableShape {
+                            ty: Pending,
+                            layout: LayoutVerdict::default(),
+                            aliases: BTreeSet::new(),
+                            lineage: BTreeMap::new(),
+                        });
+                    } else {
+                        let bind = self.infer_bind(rec, expr)?;
+                        self.check_uses(rec, expr)?;
+                        self.collect_entry_moves(rec, expr, &mut moved_srcs)?;
+                        if scalar(&bind.ty) {
+                            signal!(rec.on(), trace::TRACE_BIND_SCALAR);
+                        } else if matches!(expr, Expr::TableCtor(_)) {
+                            signal!(rec.on(), trace::TRACE_BIND_HEAP);
+                        }
+                        sets.push(bind);
+                    }
+                }
+                while sets.len() < names.len() {
+                    signal!(rec.on(), trace::TRACE_BIND_SCALAR);
+                    sets.push(TableShape {
+                        ty: Pending,
+                        layout: LayoutVerdict::default(),
+                        aliases: BTreeSet::from([NULL_ROOT]),
+                        lineage: BTreeMap::new(),
+                    });
+                }
+
+                for (name, expr) in names.iter().zip(exprs.iter()) {
+                    self.holds
+                        .num_assigns
+                        .insert(name.clone(), vec![num_of(expr)]);
+                }
+
+                let depth = self.walk.scopes.len() - 1;
+                for (idx, (name, set)) in names.iter().zip(sets).enumerate() {
+                    if let Some(old) = self.walk.scopes.last().and_then(|s| s.get(name)).cloned() {
+                        self.rebind_death(rec, name, depth, stmt, &old, &set.aliases)?;
+                    }
+                    self.check_row_ownership(name, depth, &set, &moved_srcs)?;
+                    let prov = self.prov_for_bind(exprs.get(idx), &set);
+                    let scope = self.walk.scopes.last_mut().unwrap();
+                    scope.insert(name.clone(), set);
+                    self.walk.prov[depth].insert(name.clone(), prov);
+                }
+                for (d, src) in &moved_srcs {
+                    self.poison_moved(*d, src);
+                }
+                if rec.on() {
+                    let entry = self
+                        .own
+                        .move_poisons
+                        .entry(stmt as *const Stmt)
+                        .or_default();
+                    for (_, src) in &moved_srcs {
+                        entry.insert(src.clone());
+                    }
+                }
+            }
+
+            Stmt::Assignment { name, expr } => {
+                let entry = self.holds.num_assigns.entry(name.clone()).or_default();
+                let shape = num_of(expr);
+                if !entry.contains(&shape) {
+                    entry.push(shape);
+                }
+                if let Expr::Function { params, body } = expr {
+                    self.assign_fn_binding(name, Some(expr as *const Expr));
+                    self.walk_fn_def(
+                        rec,
+                        expr as *const Expr,
+                        params,
+                        body,
+                        (stmt as *const Stmt, 2),
+                    )?;
+                } else {
+                    self.assign_fn_binding(name, None);
+                }
+                if matches!(expr, Expr::Nil) {
+                    signal!(rec.on(), trace::TRACE_STMT_ASSIGN_NIL);
+                    self.drop_reference(rec, name, stmt)?;
+                    return Ok(());
+                }
+                let bind = self.infer_bind(rec, expr)?;
+                self.check_uses(rec, expr)?;
+                let mut moved_srcs: Vec<(usize, String)> = Vec::new();
+                if let Expr::Identifier(src) = expr {
+                    if src != name {
+                        self.record_moved_param(src);
+                        self.check_boundary_pin(&bind, src)?;
+                        if matches!(bind.ty, Tbl(_)) {
+                            let (d, _) = self.resolve(rec, src)?;
+                            moved_srcs.push((d, src.clone()));
+                        }
+                    }
+                } else {
+                    self.collect_entry_moves(rec, expr, &mut moved_srcs)?;
+                }
+                if scalar(&bind.ty) {
+                    signal!(rec.on(), trace::TRACE_BIND_SCALAR);
+                } else if matches!(expr, Expr::TableCtor(_)) {
+                    signal!(rec.on(), trace::TRACE_BIND_HEAP);
+                }
+
+                if matches!(bind.ty, Tbl(_)) {
+                    signal!(rec.on(), trace::TRACE_STMT_ASSIGN_TBL);
+                    let mut incoming = Pending;
+                    for s in &bind.aliases {
+                        if !is_root(s) && !is_ghost(s) {
+                            signal!(rec.on(), trace::TRACE_STMT_ASSIGN_TBL_VALID);
+                            incoming = join_ty(&incoming, &self.lattice.site_elem[*s]);
+                        }
+                    }
+                    if scalar(&incoming) {
+                        signal!(rec.on(), trace::TRACE_STMT_ASSIGN_TBL_SCALAR);
+                        let old = self.resolve_aliases(rec, name)?;
+                        for s in old {
+                            if !is_root(&s) && !is_ghost(&s) {
+                                signal!(rec.on(), trace::TRACE_STMT_ASSIGN_TBL_SCALAR_VALID);
+                                self.decide(rec, s, &incoming);
+                            }
+                        }
+                    }
+                }
+
+                let target = self.walk.scopes.iter().rposition(|s| s.contains_key(name));
+                if let Some(depth) = target {
+                    signal!(rec.on(), trace::TRACE_STMT_ASSIGN_RESOLVED);
+                    let old = self.walk.scopes[depth]
+                        .get(name)
+                        .cloned()
+                        .expect("just checked");
+                    self.rebind_death(rec, name, depth, stmt, &old, &bind.aliases)?;
+                    self.check_row_ownership(name, depth, &bind, &moved_srcs)?;
+                    let prov = self.prov_for_bind(Some(expr), &bind);
+                    self.walk.scopes[depth].insert(name.clone(), bind);
+                    self.walk.prov[depth].insert(name.to_string(), prov);
+                    for (d, src) in &moved_srcs {
+                        self.poison_moved(*d, src);
+                    }
+                    if rec.on() {
+                        let entry = self
+                            .own
+                            .move_poisons
+                            .entry(stmt as *const Stmt)
+                            .or_default();
+                        for (_, src) in &moved_srcs {
+                            entry.insert(src.clone());
+                        }
+                    }
+                    return Ok(());
+                }
+                return Err(ShapeError(format!(
+                    "Scope Error: assignment to undeclared variable '{}'",
+                    name
+                )));
+            }
+
+            Stmt::IndexAssign { obj, key, value } => {
+                let (t, obj_sites, _) = self.infer_expr(rec, obj)?;
+                self.infer_expr(rec, key)?;
+                self.check_table_use(rec, obj)?;
+                self.check_uses(rec, obj)?;
+                self.check_uses(rec, key)?;
+
+                let (vt, vsites, vlineage) = self.infer_expr(rec, value)?;
+                self.check_uses(rec, value)?;
+
+                // The borrow-escape flip: a row read CAN be stored — it
+                // moves into the cell, its identity (the birth-site
+                // projection) recorded so the origin's frees spare the
+                // row and the housing's death claims it. The refusals
+                // that remain: a row the lattice cannot resolve
+                // (dynamic or unproven key), a row stored into a
+                // target the lattice cannot see (the pinned boundary,
+                // a pending parameter), a row already owned by a live
+                // binding or already housed, a cyclic store (the row
+                // already inside its destination), and a slot already
+                // housing a row (the displaced row would leak unnamed
+                // inside its origin). A PURE borrow (all roots with
+                // lineage — the boundary's rows) still refuses.
+                let value_ghosts: Vec<usize> = vsites.iter().copied().filter(is_ghost).collect();
+                let mut stored_ghosts: Vec<usize> = Vec::new();
+                if matches!(vt, Tbl(_)) {
+                    if !value_ghosts.is_empty() {
+                        signal!(rec.on(), trace::TRACE_ROW_HOUSING);
+                        let targets: Vec<usize> = obj_sites
+                            .iter()
+                            .copied()
+                            .filter_map(|s| self.proj_node(s))
+                            .collect();
+                        if targets.is_empty() {
+                            signal!(rec.on(), trace::TRACE_FAIL_ROW_STORE);
+                            return Err(ShapeError(
+                                "Lifetime Error: a row read cannot be stored into an \
+                                 unresolved or host-owned table — cells can only house \
+                                 rows whose base the lattice can see"
+                                    .to_string(),
+                            ));
+                        }
+                        for &g in &value_ghosts {
+                            let Some(&birth) = self.lattice.ghost_site.get(&g) else {
+                                signal!(rec.on(), trace::TRACE_FAIL_ROW_STORE);
+                                return Err(ShapeError(
+                                    "Lifetime Error: a row read with a dynamic or unproven \
+                                     key cannot be stored — its birth site is not visible \
+                                     to the lattice; store a row read through a literal \
+                                     key instead"
+                                        .to_string(),
+                                ));
+                            };
+                            for &s in &targets {
+                                if s == birth || self.birth_closure(s).contains(&birth) {
+                                    signal!(rec.on(), trace::TRACE_FAIL_ROW_STORE);
+                                    return Err(ShapeError(
+                                        "Lifetime Error: cyclic row store — the row read \
+                                         would be stored into a table that already contains \
+                                         it (glm's element types are finite)"
+                                            .to_string(),
+                                    ));
+                                }
+                            }
+                            self.check_row_housing(g, value)?;
+                            stored_ghosts.push(g);
+                        }
+                        if let Some(k) = const_key_value(key) {
+                            for &s in &targets {
+                                if let Some(&existing) = self
+                                    .lattice
+                                    .site_slots
+                                    .get(&s)
+                                    .and_then(|m| m.get(&k))
+                                    && is_ghost(&existing)
+                                    // A previous pass recorded THIS store's
+                                    // own ghost in the slot — re-housing the
+                                    // same row is the store, not a second one.
+                                    && !value_ghosts.iter().any(|&vg| self.same_row(vg, existing))
+                                {
+                                    signal!(rec.on(), trace::TRACE_FAIL_ROW_STORE);
+                                    return Err(ShapeError(
+                                        "Lifetime Error: the destination cell already houses \
+                                         a row — free it through its housing before storing \
+                                         another (the displaced row would leak unnamed)"
+                                            .to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    } else if vsites.iter().all(is_root) && !vlineage.is_empty() {
+                        signal!(rec.on(), trace::TRACE_FAIL_BORROW_ESCAPE);
+                        return Err(ShapeError(
+                            "Lifetime Error: a row read cannot be stored — borrows hold no \
+                             ownership, and cells own exactly the headers they are given"
+                                .to_string(),
+                        ));
+                    }
+                }
+
+                for &s in &obj_sites {
+                    if !is_root(&s) && !is_ghost(&s) {
+                        self.reads.user_store_sites.insert(s);
+                    }
+                }
+
+                let mut base_obj = obj;
+                let mut expected_ty = vt.clone();
+                let mut nested = false;
+
+                while let Expr::Index {
+                    obj: parent_obj, ..
+                } = base_obj
+                {
+                    signal!(rec.on(), trace::TRACE_STMT_IDX_NESTED);
+                    expected_ty = Tbl(Box::new(expected_ty));
+                    base_obj = parent_obj.as_ref();
+                    nested = true;
+                }
+
+                let (_, base_sites, _) = self.infer_expr(rec, base_obj)?;
+
+                if nested {
+                    for &s in &base_sites {
+                        if !is_root(&s) && !is_ghost(&s) {
+                            self.reads.user_store_sites.insert(s);
+                        }
+                    }
+                }
+
+                if nested && let Some(name) = get_base_identifier(base_obj) {
+                    for &s in &base_sites {
+                        if !is_root(&s) && !is_ghost(&s) {
+                            self.reads.nested_store_bases.insert(s, name.clone());
+                        }
+                    }
+                }
+
+                let mut value_sites: BTreeSet<usize> = BTreeSet::new();
+                if matches!(vt, Tbl(_)) {
+                    if rec.on() {
+                        signal!(rec.on(), trace::TRACE_STMT_IDX_TBL_VALUE);
+                    }
+                    value_sites.extend(vsites.iter().copied().filter(|c| !is_root(c) && !is_ghost(c)));
+                    // A stored row's projection IS its header: the
+                    // birth site rides the physical graph (row_links)
+                    // exactly like a stored constructor's site.
+                    for &g in &value_ghosts {
+                        if let Some(b) = self.lattice.ghost_site.get(&g) {
+                            value_sites.insert(*b);
+                        }
+                    }
+                    // A ROW value is the leaf: its lineage chains name
+                    // its ANCESTORS (the base and its other rows were
+                    // NOT stored — only this row moved).
+                    if value_ghosts.is_empty() {
+                        for (&origin, (_, d)) in &vlineage {
+                            value_sites.extend(self.reachable_rows(origin, *d));
+                        }
+                    }
+                    let targets: Vec<usize> = obj_sites
+                        .iter()
+                        .copied()
+                        .filter_map(|s| self.proj_node(s))
+                        .collect();
+                    for &s in &targets {
+                        self.reads.tbl_value_stores.insert(s);
+                        for &c in &value_sites {
+                            self.reads.row_links.entry(s).or_default().insert(c);
+                        }
+                    }
+                }
+
+                if matches!(vt, Tbl(_)) {
+                    let proj_bases: Vec<usize> = base_sites
+                        .iter()
+                        .copied()
+                        .filter_map(|x| self.proj_node(x))
+                        .collect();
+                    for s in proj_bases {
+                        self.own.stored_ctor_parents.insert(s);
+                        signal!(rec.on(), trace::TRACE_STMT_IDX_STORED_CTOR);
+                    }
+                }
+
+                let mut cyclic_sites: BTreeSet<usize> = BTreeSet::new();
+                let mut cyc_sources: BTreeSet<usize> = value_sites.clone();
+                if matches!(value, Expr::TableCtor(_)) {
+                    self.expr_named_sites(rec, value, &mut cyc_sources);
+                }
+                if matches!(vt, Tbl(_)) {
+                    for (&origin, (_, d)) in &vlineage {
+                        if *d >= 2 {
+                            cyc_sources.extend(self.reachable_rows(origin, *d));
+                        }
+                    }
+                }
+                let lineage_feedback = |s: &usize| {
+                    vlineage
+                        .iter()
+                        .any(|(&origin, (_, d))| origin == *s && (nested || *d >= 2))
+                };
+                if matches!(vt, Tbl(_)) && !matches!(value, Expr::TableCtor(_)) {
+                    let value_name = match value {
+                        Expr::Identifier(n) => n.clone(),
+                        _ => "<row>".to_string(),
+                    };
+                    for &s in &base_sites {
+                        if is_root(&s) {
+                            continue;
+                        }
+                        let cyclic = lineage_feedback(&s)
+                            || cyc_sources
+                                .iter()
+                                .any(|&v| holds_reaches(&self.holds, v, s));
+                        if cyclic {
+                            let base_name = get_base_identifier(base_obj)
+                                .cloned()
+                                .unwrap_or_else(|| "<row>".to_string());
+                            cyclic_sites.insert(s);
+                            self.holds.cyclic_stores.entry(base_name).or_insert((
+                                value_name.clone(),
+                                self.stmt_lines[&(stmt as *const Stmt)],
+                            ));
+                        } else {
+                            for &v in &value_sites {
+                                self.holds.hold_edges.entry(s).or_default().insert(v);
+                            }
+                        }
+                    }
+                } else if matches!(vt, Tbl(_)) && cyc_sources.iter().any(|v| base_sites.contains(v))
+                {
+                    let base_name = get_base_identifier(base_obj)
+                        .cloned()
+                        .unwrap_or_else(|| "<row>".to_string());
+                    for &s in &base_sites {
+                        if !is_root(&s) {
+                            cyclic_sites.insert(s);
+                            self.holds.cyclic_stores.entry(base_name.clone()).or_insert((
+                                "<constructor>".to_string(),
+                                self.stmt_lines[&(stmt as *const Stmt)],
+                            ));
+                        }
+                    }
+                }
+
+                let mut moved_srcs: Vec<(usize, String)> = Vec::new();
+                if let Expr::Identifier(src) = value {
+                    self.record_moved_param(src);
+                    let (d, bind) = self.resolve(rec, src)?;
+                    self.check_boundary_pin(&bind, src)?;
+                    if matches!(vt, Tbl(_)) {
+                        moved_srcs.push((d, src.clone()));
+                    }
+                } else if let Expr::TableCtor(_) = value {
+                    self.collect_entry_moves(rec, value, &mut moved_srcs)?;
+                }
+                for (d, src) in &moved_srcs {
+                    self.poison_moved(*d, src);
+                }
+                if rec.on() {
+                    let entry = self
+                        .own
+                        .move_poisons
+                        .entry(stmt as *const Stmt)
+                        .or_default();
+                    for (_, src) in &moved_srcs {
+                        entry.insert(src.clone());
+                    }
+                }
+
+                if matches!(t, Tbl(_) | Pending) {
+                    signal!(rec.on(), trace::TRACE_STMT_IDX_BASE_TBL);
+                    let proj_bases: Vec<usize> = base_sites
+                        .iter()
+                        .copied()
+                        .filter_map(|x| self.proj_node(x))
+                        .collect();
+                    for s in proj_bases.iter().copied().filter(|x| !cyclic_sites.contains(x)) {
+                        signal!(rec.on(), trace::TRACE_STMT_IDX_VALID_ALIAS);
+                        self.decide(rec, s, &expected_ty);
+                    }
+                }
+
+                if rec.on() {
+                    signal!(rec.on(), trace::TRACE_STMT_IDX_CHECK_THRESH);
+                    let real_base_sites: BTreeSet<usize> = base_sites
+                        .iter()
+                        .copied()
+                        .filter_map(|s| self.proj_node(s))
+                        .collect();
+                    self.check_key_threshold(rec, key, &real_base_sites)?;
+                }
+
+                // The housing records: the stored row's birth site
+                // rides the target's physical graph, its ghost is
+                // spoken for (one housing per row), its slot map entry
+                // names it, and its store-time register rides the
+                // lowerer's keep capture.
+                if !stored_ghosts.is_empty() {
+                    let slot = const_key_value(key);
+                    for &g in &stored_ghosts {
+                        let birth = self.lattice.ghost_site[&g];
+                        let tgt_sites: Vec<usize> = obj_sites
+                            .iter()
+                            .copied()
+                            .filter_map(|x| self.proj_node(x))
+                            .collect();
+                        for tgt in tgt_sites {
+                            self.reads.row_links.entry(tgt).or_default().insert(birth);
+                            self.own.stored_ctor_parents.insert(tgt);
+                            if let Some(k) = slot {
+                                self.lattice
+                                    .site_slots
+                                    .entry(tgt)
+                                    .or_default()
+                                    .insert(k, g);
+                            }
+                        }
+                        self.lattice.housed_ghosts.insert(g);
+                        if rec.on() {
+                            self.own
+                                .store_ghost_keeps
+                                .entry(stmt as *const Stmt)
+                                .or_default()
+                                .push(g);
+                            signal!(rec.on(), trace::TRACE_ROW_HOUSED);
+                        }
+                    }
+                }
+            }
+
+            Stmt::While { condition, body } => {
+                self.infer_expr(rec, condition)?;
+                self.check_uses(rec, condition)?;
+
+                if rec.on()
+                    && let Some(guard) = extract_guard(condition)
+                {
+                    signal!(rec.on(), trace::TRACE_STMT_WHILE_FILL);
+                    self.detect_fill_loop(rec, guard, body);
+                }
+
+                let entry = self.walk.scopes.clone();
+                let mut head = entry.clone();
+                let scope_key = (stmt as *const Stmt, 0);
+                loop {
+                    self.walk.scopes = head.clone();
+                    self.check_uses(rec, condition)?;
+                    self.with_scope(|an| {
+                        an.walk_stmts(rec, body);
+                        an.decide_scope_exit(rec, scope_key)
+                    })?;
+                    let latch = self.walk.scopes.clone();
+                    let mut merged = entry.clone();
+                    merge_table_scopes(&mut merged, &head, &latch);
+                    if merged == head {
+                        signal!(rec.on(), trace::TRACE_STMT_WHILE_STABLE);
+                        break;
+                    }
+                    head = merged;
+                }
+                self.walk.scopes = head;
+                // A name the loop's fixpoint changed may hold the
+                // latch's value at the free point — the pre-loop tag
+                // cannot name it. Drop to the union fallback.
+                for depth in 0..self.walk.scopes.len() {
+                    let names: Vec<String> =
+                        self.walk.scopes[depth].keys().cloned().collect();
+                    for name in names {
+                        let changed = entry
+                            .get(depth)
+                            .and_then(|s| s.get(&name))
+                            .is_some_and(|e| e.aliases != self.walk.scopes[depth][&name].aliases);
+                        if changed {
+                            self.walk.prov[depth].insert(name, None);
+                        }
+                    }
+                }
+            }
+
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                signal!(rec.on(), trace::TRACE_STMT_IF);
+                self.infer_expr(rec, condition)?;
+                self.check_uses(rec, condition)?;
+                let snapshot = self.walk.scopes.clone();
+                let prov_snapshot = self.walk.prov.clone();
+                self.with_scope(|an| {
+                    an.walk_stmts(rec, then_body);
+                    an.decide_scope_exit(rec, (stmt as *const Stmt, 0))
+                })?;
+                let then_exit = self.walk.scopes.clone();
+                self.walk.scopes = snapshot;
+                self.walk.prov = prov_snapshot.clone();
+                self.with_scope(|an| {
+                    an.walk_stmts(rec, else_body);
+                    an.decide_scope_exit(rec, (stmt as *const Stmt, 1))
+                })?;
+                let else_exit = self.walk.scopes.clone();
+                merge_table_scopes(&mut self.walk.scopes, &then_exit, &else_exit);
+                // Provenance: a name the arms bind DIFFERENTLY whose
+                // join is mixed carries the join's tag (the free points
+                // split their plans per arm); a second join over an
+                // already-tagged name drops to the union fallback — its
+                // old tag cannot name the new value's arm.
+                for depth in 0..self.walk.scopes.len() {
+                    let names: Vec<String> =
+                        self.walk.scopes[depth].keys().cloned().collect();
+                    for name in names {
+                        let (Some(tt), Some(et)) = (
+                            then_exit.get(depth).and_then(|s| s.get(&name)),
+                            else_exit.get(depth).and_then(|s| s.get(&name)),
+                        ) else {
+                            continue;
+                        };
+                        if tt.aliases == et.aliases {
+                            continue;
+                        }
+                        let joined = &self.walk.scopes[depth][&name];
+                        let mixed = joined.aliases.iter().any(is_ghost)
+                            && joined.aliases.iter().any(|x| !is_root(x) && !is_ghost(x));
+                        let cur = self.walk.prov[depth]
+                            .get(&name)
+                            .copied()
+                            .flatten();
+                        let new_prov = if mixed && cur.is_none() {
+                            self.join_arm_shapes.insert(
+                                (stmt as *const Stmt, name.clone()),
+                                (tt.clone(), et.clone()),
+                            );
+                            Some(Prov::If(stmt as *const Stmt))
+                        } else {
+                            None
+                        };
+                        self.walk.prov[depth].insert(name, new_prov);
+                    }
+                }
+            }
+
+            Stmt::Do { body } => {
+                signal!(rec.on(), trace::TRACE_STMT_DO);
+                self.with_scope(|an| {
+                    an.walk_stmts(rec, body);
+                    an.decide_scope_exit(rec, (stmt as *const Stmt, 0))
+                })?
+            }
+
+            Stmt::Print { exprs } => {
+                signal!(rec.on(), trace::TRACE_STMT_PRINT);
+                for e in exprs {
+                    self.infer_expr(rec, e)?;
+                    self.check_uses(rec, e)?;
+                }
+            }
+
+            Stmt::Expr { expr } => {
+                // A call on its own line: the value is discarded, the
+                // effects are not.
+                self.infer_expr(rec, expr)?;
+                self.check_uses(rec, expr)?;
+            }
+
+            Stmt::Return { value } => {
+                // The boundary: the returned value crosses into the
+                // host's ownership, so it is checked as a use — nothing
+                // is poisoned or freed; execution never continues past
+                // the hand-off. Inside a function body (inlined at its
+                // call sites), the value's shape also joins the body's
+                // return shape.
+                if let Some(v) = value {
+                    let (ty, mut aliases, lineage) = self.infer_expr(rec, v)?;
+                    self.check_uses(rec, v)?;
+                    // A return hands its function's parameter straight
+                    // back out when the returned expression IS a
+                    // parameter or reaches one through a call chain
+                    // (`return g(h(x))`): at a call site whose argument
+                    // in that position is the pinned boundary table,
+                    // the call's RESULT is pinned too. Recorded on
+                    // every pass; the sets only grow.
+                    let frame = self.fn_walk.last().map(|(fp, ps)| (*fp, ps.clone()));
+                    if let Some((fn_ptr, params)) = frame {
+                        let reaches = self.return_reaches_param(v, &params);
+                        if !reaches.is_empty() {
+                            self.fn_ret_params
+                                .entry(fn_ptr)
+                                .or_default()
+                                .extend(reaches);
+                        }
+                    }
+                    // The value's READ-reach — the heap sites the
+                    // returned table IS or lives inside — for the two
+                    // consumers that must not free it: the body's
+                    // def-site reach frame (a caller's return-path
+                    // planner consults it through fn_ret_reach) and
+                    // this return's own path batch below. A scalar
+                    // value references nothing: its table-typed
+                    // sub-evaluations all die at the statement.
+                    let mut reach: BTreeSet<usize> = BTreeSet::new();
+                    if matches!(ty, Tbl(_) | Pending) {
+                        self.ret_reach_sites(v, &mut reach);
+                    }
+                    if let Some(slot) = self.fn_ret_reaches.last_mut() {
+                        slot.extend(reach.iter().copied());
+                    }
+                    if rec.on() {
+                        self.plan_return_exits(Some((v, &ty)), &reach, stmt as *const Stmt);
+                    }
+                    if let Some(slot) = self.fn_rets.last_mut() {
+                        // A body returning an outer name LENDS the
+                        // table out — a borrow, not a transfer: strip
+                        // every alias a binding outside the body still
+                        // owns, so the caller's ownership flow can
+                        // never free (or double-free) the original
+                        // owner's header. Constructor-born sites and
+                        // roots (the pinned-boundary taint) survive.
+                        if let Some(&entry) = self.fn_scope_entries.last() {
+                            let outer_owned: BTreeSet<usize> = self.walk.scopes[..entry]
+                                .iter()
+                                .flat_map(|scope| scope.values())
+                                .flat_map(|ts| ts.aliases.iter().copied())
+                                .filter(|s| !is_root(s))
+                                .collect();
+                            aliases.retain(|s| is_root(s) || !outer_owned.contains(s));
+                        }
+                        let shape = TableShape {
+                            ty,
+                            layout: LayoutVerdict::default(),
+                            aliases,
+                            lineage,
+                        };
+                        match slot {
+                            None => *slot = Some(shape.clone()),
+                            Some(joined) => {
+                                joined.join(&shape);
+                            }
+                        }
+                        // The per-edge twin: a caller whose result mixes
+                        // a row edge with a ctor edge plans its frees
+                        // per return edge (the tag phi over the exit's
+                        // edges, in this same statement order).
+                        if let Some(frame) = self.fn_edge_frames.last_mut() {
+                            frame.push(shape);
+                        }
+                    }
+                } else if rec.on() {
+                    // A bare return: nothing crosses out, so nothing is
+                    // excluded — every crossed scope frees in full.
+                    let no_reach = BTreeSet::new();
+                    self.plan_return_exits(None, &no_reach, stmt as *const Stmt);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn enter_scope(&mut self) {
+        self.walk.scopes.push(BTreeMap::new());
+        self.walk.fn_scopes.push(BTreeMap::new());
+        self.walk.prov.push(BTreeMap::new());
+    }
+
+    pub(super) fn exit_scope(&mut self) {
+        if let Some(dying) = self.walk.scopes.last() {
+            for name in dying.keys() {
+                self.holds.num_assigns.remove(name);
+            }
+        }
+        self.walk.fn_scopes.pop();
+        self.walk.prov.pop();
+        self.walk.scopes.pop();
+    }
+
+    pub(super) fn with_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.enter_scope();
+        let r = f(self);
+        self.exit_scope();
+        r
+    }
+
+    pub(super) fn resolve(&self, rec: Gate, name: &str) -> Result<(usize, TableShape), ShapeError> {
+        for (depth, scope) in self.walk.scopes.iter().enumerate().rev() {
+            if let Some(bind) = scope.get(name) {
+                signal!(rec.on(), trace::TRACE_RESOLVE_FOUND);
+                return Ok((depth, bind.clone()));
+            }
+        }
+        Err(ShapeError(format!(
+            "Scope Error: reference to undeclared variable '{}'",
+            name
+        )))
+    }
+
+    pub(super) fn resolve_aliases(&self, rec: Gate, name: &str) -> Result<BTreeSet<usize>, ShapeError> {
+        Ok(self.resolve(rec, name)?.1.aliases)
+    }
+
+    /// The provenance of a freshly bound value: a MIXED shape (a row
+    /// ghost alongside real sites) records which join produced it — a
+    /// call's return-edge join, or a move inherits its source's tag.
+    /// Everything else plans on the union shape (None).
+    pub(super) fn prov_for_bind(&self, expr: Option<&Expr>, shape: &TableShape) -> Option<Prov> {
+        let has_ghost = shape.aliases.iter().any(is_ghost);
+        let has_site = shape.aliases.iter().any(|x| !is_root(x) && !is_ghost(x));
+        if !(has_ghost && has_site) {
+            return None;
+        }
+        match expr {
+            Some(e @ Expr::Call { .. }) => Some(Prov::Call(e as *const Expr)),
+            Some(Expr::Identifier(src)) => self
+                .resolve(None, src)
+                .ok()
+                .and_then(|(d, _)| self.walk.prov.get(d)?.get(src).copied().flatten()),
+            _ => None,
+        }
+    }
+
+    pub(super) fn expr_named_sites(&self, rec: Gate, expr: &Expr, out: &mut BTreeSet<usize>) {
+        match expr {
+            Expr::Identifier(n) => {
+                if let Ok((_, b)) = self.resolve(rec, n) {
+                    out.extend(b.aliases.iter().copied().filter(|&s| !is_root(&s)));
+                }
+            }
+            Expr::TableCtor(entries) => {
+                for (_, e) in entries {
+                    self.expr_named_sites(rec, e, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}

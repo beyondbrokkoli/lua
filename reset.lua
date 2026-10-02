@@ -1,23 +1,21 @@
 #!/usr/bin/env lua
+-- reset.lua — RELOCK baselines. Milestones only, never to "fix" drift.
 dofile("conf.lua")
 
 local function usage()
     print([[
-Writes to ]] .. LOCK_DIR .. [[/.
-Compiles every buildable case and OVERWRITES ]] .. LOCK_DIR .. [[/<name>.ll
+Rewrites every buildable case's IR baseline in ]] .. LOCK_DIR .. [[/.
 
-Usage: lua reset.lua run]])
+Usage: lua reset.lua]])
 end
 
 local ARGS = {...}
-if #ARGS == 0 then usage() os.exit(0) end
-if ARGS[1] ~= "run" then
+if ARGS[1] and ARGS[1] ~= "run" then
     usage()
     io.stderr:write("\nunknown argument: " .. ARGS[1] .. "\n")
     os.exit(1)
 end
 
--- Rebuild the compiler first
 do
     local res = os.execute("cargo build --release --quiet > /dev/null 2> " .. BERR)
     if not (res == 0 or res == true) then
@@ -37,8 +35,8 @@ for _, b in ipairs(corpus.bad) do
     os.exit(1)
 end
 
--- No ARGS are passed here: the boundary table crosses at runtime (the
--- host builds it after the link), so the IR never depends on it.
+-- No ARGS are passed: the boundary table crosses at runtime, so the IR
+-- never depends on it.
 local failed = {}
 for _, filename in ipairs(lockables) do
     -- One invocation compiles and runs; a panic case exits nonzero on

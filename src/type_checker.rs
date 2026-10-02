@@ -121,7 +121,15 @@ impl<'a> TypeChecker<'a> {
         for stmt in stmts {
             if let Err(msg) = self.check_stmt(stmt) {
                 signal!(trace::TRACE_GHOST_BAIL_CHECKER);
-                self.shape.diagnostics.push(msg);
+                let line = self
+                    .shape
+                    .stmt_lines
+                    .get(&(stmt as *const Stmt))
+                    .copied();
+                self.shape.diagnostics.push(match line {
+                    Some(l) => format!("line {l}: {msg}"),
+                    None => msg,
+                });
                 return;
             }
         }
@@ -157,7 +165,7 @@ impl<'a> TypeChecker<'a> {
         let current_scope = self.scopes.last_mut().unwrap();
         if current_scope.contains_key(&name) && !boundary_seed {
             return Err(format!(
-                "Variable '{}' already declared in this scope",
+                "Scope Error: variable '{}' already declared in this scope",
                 name
             ));
         }
@@ -171,7 +179,10 @@ impl<'a> TypeChecker<'a> {
                 return Ok(self.resolve_var(ty));
             }
         }
-        Err(format!("Undeclared variable: '{}'", name))
+        Err(format!(
+            "Scope Error: reference to undeclared variable '{}'",
+            name
+        ))
     }
 
     fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
@@ -219,7 +230,7 @@ impl<'a> TypeChecker<'a> {
                 if matches!(expr, Expr::Nil) {
                     if !matches!(expected, StaticType::Table(_) | StaticType::Unknown(_)) {
                         return Err(format!(
-                            "Type Error: 'nil' releases tables — '{}' is a {}",
+                            "Type Error: 'nil' releases tables — '{}' is of type {}",
                             name,
                             type_name(&expected)
                         ));
@@ -525,9 +536,9 @@ impl<'a> TypeChecker<'a> {
                         _ => Err("Type Error: 'not' requires a Boolean operand".to_string()),
                     },
                     UnOp::Len => match self.resolve_var(&t) {
-                        StaticType::Table(_) => Ok(StaticType::Integer),
+                        StaticType::Table(_) | StaticType::String => Ok(StaticType::Integer),
                         _ => Err(format!(
-                            "Type Error: '#' requires a table operand, got {}",
+                            "Type Error: '#' requires a Table or String operand, got {}",
                             type_name(&t)
                         )),
                     },
@@ -772,8 +783,7 @@ fn type_name(ty: &StaticType) -> String {
             StaticType::String => "StringTable".to_string(),
             StaticType::Unknown(_) => "Table<?>".to_string(),
             _ => format!("Table of {}", type_name(elem)),
-        },
-        StaticType::Unknown(_) => "?".to_string(),
+        },        StaticType::Unknown(_) => "?".to_string(),
     }
 }
 

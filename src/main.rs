@@ -232,18 +232,31 @@ fn main() {
     let source = std::fs::read_to_string(source_path).expect("Failed to read source");
 
     let mut tokens = Vec::new();
+    let mut offsets = Vec::new();
     let mut front_diagnostics = Vec::new();
-    for res in lexer::Token::lexer(&source) {
-        match res {
-            Ok(token) => tokens.push(token),
-            Err(_) => {
-                front_diagnostics.push("Syntax Error: Lexer error".to_string());
+    let mut lexer = lexer::Token::lexer(&source);
+    loop {
+        match lexer.next() {
+            Some(Ok(token)) => {
+                offsets.push(lexer.span().start);
+                tokens.push(token);
+            }
+            Some(Err(_)) => {
+                let line = 1 + source.as_bytes()[..lexer.span().start]
+                    .iter()
+                    .filter(|b| **b == b'\n')
+                    .count();
+                front_diagnostics.push(format!("line {line}: Syntax Error: Lexer error"));
                 break;
             }
+            None => break,
         }
     }
 
-    let mut parser = parser::Parser::new(tokens);
+    let mut parser = parser::Parser::new(
+        tokens.into_iter().zip(offsets).collect(),
+        &source,
+    );
     let ast = parser.parse_program();
     front_diagnostics.extend(parser.diagnostics);
 
@@ -256,7 +269,11 @@ fn main() {
         std::process::exit(1);
     }
 
-    let ctx = analysis::build_context(&ast);
+    let ctx = analysis::build_context(
+        &ast,
+        &parser.stmt_line_seq,
+        parser.ctor_line_seq.clone(),
+    );
 
     let mut shape = shape::analyze(&ctx);
 
@@ -319,8 +336,11 @@ fn main() {
 
     // The linker bypass: no @main, no executable — the module is
     // linked as a shared library whose one export is @glm_exec.
+    // out.ll carries no triple; the runtime staticlib's embedded triple
+    // sets it at link, which clang would flag on every compile.
     let status = std::process::Command::new("clang")
         .arg("-O3")
+        .arg("-Wno-override-module")
         .arg("-shared")
         .arg("-fPIC")
         .arg("out.ll")

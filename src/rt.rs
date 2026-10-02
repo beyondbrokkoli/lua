@@ -712,6 +712,23 @@ pub unsafe extern "C" fn glm_print_string(val: *const u8) {
     print!("{}", String::from_utf8_lossy(bytes));
 }
 
+/// `#s`: a string's length, in bytes up to the terminator. The intern
+/// gives each literal one address, so this reads the one shared
+/// constant — no per-call heap traffic.
+///
+/// # Safety
+/// `val` NUL-terminated and readable through the terminator.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glm_str_len(val: *const u8) -> i64 {
+    let mut len = 0usize;
+    unsafe {
+        while *val.add(len) != 0 {
+            len += 1;
+        }
+    }
+    len as i64
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn glm_print_sep() {
     print!("\t");
