@@ -228,14 +228,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 let actual = self.check_expr(expr)?;
                 if expected != actual {
-                    if is_empty_table_constructor(expr) {
-                        return Err(format!(
-                            "Type Error: cannot assign {} to variable '{}' of type {}",
-                            type_name(&actual),
-                            name,
-                            type_name(&expected)
-                        ));
-                    }
+                    // A rebind unifies: an unwitnessed ctor's element
+                    // binds to the name's, so `t = {}` re-opens the
+                    // name under its own element type — the displaced
+                    // header's fate is the analyzer's rebind free, not
+                    // this slot's business. Monomorphism lives on the
+                    // name: a later store through it still polices.
                     self.unify(&expected, &actual)?;
                     let resolved = self.resolve_var(&actual);
                     for scope in self.scopes.iter_mut().rev() {
@@ -749,10 +747,6 @@ impl<'a> TypeChecker<'a> {
             )),
         }
     }
-}
-
-fn is_empty_table_constructor(expr: &Expr) -> bool {
-    matches!(expr, Expr::TableCtor(elems) if elems.is_empty())
 }
 
 fn types_compatible(l: &StaticType, r: &StaticType) -> bool {
