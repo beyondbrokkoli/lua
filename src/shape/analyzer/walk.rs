@@ -405,7 +405,12 @@ impl Analyzer {
                     if rec.on() {
                         signal!(rec.on(), trace::TRACE_STMT_IDX_TBL_VALUE);
                     }
-                    value_sites.extend(vsites.iter().copied().filter(|c| !is_root(c) && !is_ghost(c)));
+                    value_sites.extend(
+                        vsites
+                            .iter()
+                            .copied()
+                            .filter(|c| !is_root(c) && !is_ghost(c)),
+                    );
                     // A stored row's projection IS its header: the
                     // birth site rides the physical graph (row_links)
                     // exactly like a stored constructor's site.
@@ -500,10 +505,13 @@ impl Analyzer {
                     for &s in &base_sites {
                         if !is_root(&s) {
                             cyclic_sites.insert(s);
-                            self.holds.cyclic_stores.entry(base_name.clone()).or_insert((
-                                "<constructor>".to_string(),
-                                self.stmt_lines[&(stmt as *const Stmt)],
-                            ));
+                            self.holds
+                                .cyclic_stores
+                                .entry(base_name.clone())
+                                .or_insert((
+                                    "<constructor>".to_string(),
+                                    self.stmt_lines[&(stmt as *const Stmt)],
+                                ));
                         }
                     }
                 }
@@ -540,7 +548,11 @@ impl Analyzer {
                         .copied()
                         .filter_map(|x| self.proj_node(x))
                         .collect();
-                    for s in proj_bases.iter().copied().filter(|x| !cyclic_sites.contains(x)) {
+                    for s in proj_bases
+                        .iter()
+                        .copied()
+                        .filter(|x| !cyclic_sites.contains(x))
+                    {
                         signal!(rec.on(), trace::TRACE_STMT_IDX_VALID_ALIAS);
                         self.decide(rec, s, &expected_ty);
                     }
@@ -574,11 +586,7 @@ impl Analyzer {
                             self.reads.row_links.entry(tgt).or_default().insert(birth);
                             self.own.stored_ctor_parents.insert(tgt);
                             if let Some(k) = slot {
-                                self.lattice
-                                    .site_slots
-                                    .entry(tgt)
-                                    .or_default()
-                                    .insert(k, g);
+                                self.lattice.site_slots.entry(tgt).or_default().insert(k, g);
                             }
                         }
                         self.lattice.housed_ghosts.insert(g);
@@ -629,8 +637,7 @@ impl Analyzer {
                 // latch's value at the free point — the pre-loop tag
                 // cannot name it. Drop to the union fallback.
                 for depth in 0..self.walk.scopes.len() {
-                    let names: Vec<String> =
-                        self.walk.scopes[depth].keys().cloned().collect();
+                    let names: Vec<String> = self.walk.scopes[depth].keys().cloned().collect();
                     for name in names {
                         let changed = entry
                             .get(depth)
@@ -672,8 +679,7 @@ impl Analyzer {
                 // already-tagged name drops to the union fallback — its
                 // old tag cannot name the new value's arm.
                 for depth in 0..self.walk.scopes.len() {
-                    let names: Vec<String> =
-                        self.walk.scopes[depth].keys().cloned().collect();
+                    let names: Vec<String> = self.walk.scopes[depth].keys().cloned().collect();
                     for name in names {
                         let (Some(tt), Some(et)) = (
                             then_exit.get(depth).and_then(|s| s.get(&name)),
@@ -687,10 +693,7 @@ impl Analyzer {
                         let joined = &self.walk.scopes[depth][&name];
                         let mixed = joined.aliases.iter().any(is_ghost)
                             && joined.aliases.iter().any(|x| !is_root(x) && !is_ghost(x));
-                        let cur = self.walk.prov[depth]
-                            .get(&name)
-                            .copied()
-                            .flatten();
+                        let cur = self.walk.prov[depth].get(&name).copied().flatten();
                         let new_prov = if mixed && cur.is_none() {
                             self.join_arm_shapes.insert(
                                 (stmt as *const Stmt, name.clone()),
@@ -858,7 +861,11 @@ impl Analyzer {
         )))
     }
 
-    pub(super) fn resolve_aliases(&self, rec: Gate, name: &str) -> Result<BTreeSet<usize>, ShapeError> {
+    pub(super) fn resolve_aliases(
+        &self,
+        rec: Gate,
+        name: &str,
+    ) -> Result<BTreeSet<usize>, ShapeError> {
         Ok(self.resolve(rec, name)?.1.aliases)
     }
 

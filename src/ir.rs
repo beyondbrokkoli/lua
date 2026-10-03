@@ -166,7 +166,10 @@ impl Repr for Any {
         ", align 8"
     }
     fn emit_move(target: &Reg<Self>, source: &Reg<Self>, code: &mut String) {
-        code.push_str(&format!("  %v{} = add i128 %v{}, 0\n", target.id, source.id));
+        code.push_str(&format!(
+            "  %v{} = add i128 %v{}, 0\n",
+            target.id, source.id
+        ));
     }
     fn any(reg: Reg<Self>) -> AnyReg {
         AnyReg::Any(reg)

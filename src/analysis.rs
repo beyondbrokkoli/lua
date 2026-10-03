@@ -66,10 +66,9 @@ fn record_stmt_exprs(
     seq: &[usize],
     i: &mut usize,
 ) {
-    let expr =
-        |e: &Expr, map: &mut BTreeMap<*const Stmt, usize>, i: &mut usize| {
-            record_expr_lines(e, map, seq, i)
-        };
+    let expr = |e: &Expr, map: &mut BTreeMap<*const Stmt, usize>, i: &mut usize| {
+        record_expr_lines(e, map, seq, i)
+    };
     match stmt {
         Stmt::LocalDecl { exprs, .. } | Stmt::Print { exprs } => {
             for e in exprs {
@@ -274,11 +273,7 @@ fn scan_stmt(
     // A name is function-local exactly when it is declared at or below
     // the depth the enclosing function entered at — names declared in
     // outer scopes are the ones an inlined body rebinds.
-    fn record(
-        current_fn: Option<&mut FnScan>,
-        scopes: &[BTreeSet<String>],
-        name: &str,
-    ) {
+    fn record(current_fn: Option<&mut FnScan>, scopes: &[BTreeSet<String>], name: &str) {
         if let Some(scan) = current_fn
             && !scopes[scan.entry_depth..].iter().any(|s| s.contains(name))
         {

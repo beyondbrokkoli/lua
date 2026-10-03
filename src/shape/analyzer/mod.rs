@@ -4,7 +4,7 @@ use glm_rt::{signal, trace};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::core::{
-    BOUNDS_FAIL_THRESHOLD, BOUNDARY_ROOT, LayoutVerdict, MOVED_ROOT, NULL_ROOT, RowLineage,
+    BOUNDARY_ROOT, BOUNDS_FAIL_THRESHOLD, LayoutVerdict, MOVED_ROOT, NULL_ROOT, RowLineage,
     SPARSE_THRESHOLD, TableShape, is_ghost, is_root,
 };
 use super::facts::ShapeFacts;
@@ -33,7 +33,6 @@ use infer::*;
 use lattice::*;
 use rebind::*;
 use rows::*;
-
 
 struct ShapeError(String);
 

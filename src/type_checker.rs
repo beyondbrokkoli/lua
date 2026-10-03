@@ -140,10 +140,7 @@ impl<'a> TypeChecker<'a> {
         // read and no boundary table materializes.
         let arg_elem = self.fresh_unknown();
         self.arg_elem_id = Some(arg_elem_id(&arg_elem));
-        self.scopes[0].insert(
-            "arg".to_string(),
-            StaticType::Table(Box::new(arg_elem)),
-        );
+        self.scopes[0].insert("arg".to_string(), StaticType::Table(Box::new(arg_elem)));
         self.check_block(stmts);
         self.finalize_boundary_elem();
         self.resolve_all_scopes();
@@ -220,11 +217,7 @@ impl<'a> TypeChecker<'a> {
         for stmt in stmts {
             if let Err(msg) = self.check_stmt(stmt) {
                 signal!(trace::TRACE_GHOST_BAIL_CHECKER);
-                let line = self
-                    .shape
-                    .stmt_lines
-                    .get(&(stmt as *const Stmt))
-                    .copied();
+                let line = self.shape.stmt_lines.get(&(stmt as *const Stmt)).copied();
                 self.shape.diagnostics.push(match line {
                     Some(l) => format!("line {l}: {msg}"),
                     None => msg,
@@ -281,7 +274,8 @@ impl<'a> TypeChecker<'a> {
                 // `local arg` replaced the binding with its own type,
                 // so the head id is the discriminator). Only such a
                 // read gives the script a boundary contract to pin.
-                if depth == 0 && name == "arg"
+                if depth == 0
+                    && name == "arg"
                     && let Some(head) = self.arg_elem_id_head()
                     && let StaticType::Table(inner) = ty
                     && let StaticType::Unknown(id) = self.resolve_var(inner)
@@ -302,12 +296,11 @@ impl<'a> TypeChecker<'a> {
     /// been unified onto another unknown (a ctor's element), so the
     /// head, not the raw seed id, is what a read resolves to.
     fn arg_elem_id_head(&self) -> Option<usize> {
-        self.arg_elem_id.map(|id| {
-            match self.resolve_var(&StaticType::Unknown(id)) {
+        self.arg_elem_id
+            .map(|id| match self.resolve_var(&StaticType::Unknown(id)) {
                 StaticType::Unknown(head) => head,
                 _ => id,
-            }
-        })
+            })
     }
 
     fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
@@ -462,12 +455,10 @@ impl<'a> TypeChecker<'a> {
                         let expr = match value {
                             Some(expr) if !matches!(expr, Expr::Nil) => expr,
                             _ => {
-                                return Err(
-                                    "Type Error: an internal 'return' carries a value — \
+                                return Err("Type Error: an internal 'return' carries a value — \
                                      the bare and nil forms belong to the script's host \
                                      boundary"
-                                        .to_string(),
-                                );
+                                    .to_string());
                             }
                         };
                         let actual = self.check_expr(expr)?;
@@ -725,7 +716,9 @@ impl<'a> TypeChecker<'a> {
                         };
                         match t {
                             StaticType::Integer | StaticType::Float => Ok(t),
-                            _ => Err("Type Error: unary '-' requires a numeric operand".to_string()),
+                            _ => {
+                                Err("Type Error: unary '-' requires a numeric operand".to_string())
+                            }
                         }
                     }
                     UnOp::Not => {
@@ -759,11 +752,9 @@ impl<'a> TypeChecker<'a> {
                 let name = match callee.as_ref() {
                     Expr::Identifier(n) => n.clone(),
                     _ => {
-                        return Err(
-                            "Type Error: calls go through a function variable — only \
+                        return Err("Type Error: calls go through a function variable — only \
                              anonymous functions assigned directly to variables are callable"
-                                .to_string(),
-                        );
+                            .to_string());
                     }
                 };
                 let fn_ptr = self
@@ -784,17 +775,12 @@ impl<'a> TypeChecker<'a> {
                          their call sites, so a call chain may not reach back into itself"
                     ));
                 }
-                let def = self
-                    .shape
-                    .fn_defs
-                    .get(&fn_ptr)
-                    .cloned()
-                    .ok_or_else(|| {
-                        format!(
-                            "Type Error: '{name}' holds no function body — \
+                let def = self.shape.fn_defs.get(&fn_ptr).cloned().ok_or_else(|| {
+                    format!(
+                        "Type Error: '{name}' holds no function body — \
                              the checker and the analyzer disagree"
-                        )
-                    })?;
+                    )
+                })?;
                 if args.len() != def.params.len() {
                     return Err(format!(
                         "Type Error: '{name}' takes {} argument(s), got {}",
@@ -971,20 +957,13 @@ impl<'a> TypeChecker<'a> {
     /// equality — `arg[0] == "x"` makes String cells, `arg[0] == true`
     /// Boolean. A Table partner pins nothing (cells are never tables;
     /// the compatible check answers) and two unknowns stay open.
-    fn pin_scalar_pair(
-        &mut self,
-        l: &StaticType,
-        r: &StaticType,
-    ) -> Result<(), String> {
+    fn pin_scalar_pair(&mut self, l: &StaticType, r: &StaticType) -> Result<(), String> {
         let lr = self.resolve_var(l);
         let rr = self.resolve_var(r);
         let scalar = |t: &StaticType| {
             matches!(
                 t,
-                StaticType::Integer
-                    | StaticType::Float
-                    | StaticType::Boolean
-                    | StaticType::String
+                StaticType::Integer | StaticType::Float | StaticType::Boolean | StaticType::String
             )
         };
         match (&lr, &rr) {

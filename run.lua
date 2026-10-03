@@ -125,6 +125,12 @@ do
         os.exit(1)
     end
     print("  ✓ compiler fresh (target/release/glm)")
+    local res = os.execute("cargo fmt --check > /dev/null 2> " .. BERR)
+    if not (res == 0 or res == true) then
+        print(c(RED, "  ✗ cargo fmt --check failed (run `cargo fmt` and re-stage):") .. "\n" .. read_file(BERR))
+        os.exit(1)
+    end
+    print("  ✓ rustfmt clean (cargo fmt --check)")
     local res = os.execute("cargo clippy --release --quiet -- -D warnings > /dev/null 2> " .. BERR)
     if not (res == 0 or res == true) then
         print(c(RED, "  ✗ cargo clippy failed (-D warnings):") .. "\n" .. read_file(BERR))

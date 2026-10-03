@@ -388,11 +388,7 @@ pub unsafe extern "C" fn glm_tbl_get(t: *mut GlmTable, index: i64, dst: *mut u8,
             if tbl.esize == 16 {
                 // An Any (tagged) cell: one u128 back into 16 bytes.
                 unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        (&v as *const u128).cast::<u8>(),
-                        dst,
-                        16,
-                    );
+                    std::ptr::copy_nonoverlapping((&v as *const u128).cast::<u8>(), dst, 16);
                 }
             } else if tbl.esize == 8 {
                 unsafe { *(dst as *mut u64) = v as u64 };
@@ -702,8 +698,12 @@ unsafe fn free_tbl(t: *mut GlmTable, keeps: &[*mut GlmTable]) {
     // computes its dealloc layout from the wrong bucket stride and
     // glibc dies with free(): invalid size on the first sparse table.
     if !tbl.sparse_map.is_null() {
-        let _ =
-            unsafe { Box::from_raw(tbl.sparse_map.cast::<std::collections::HashMap<i64, u128>>()) };
+        let _ = unsafe {
+            Box::from_raw(
+                tbl.sparse_map
+                    .cast::<std::collections::HashMap<i64, u128>>(),
+            )
+        };
     }
     if tbl.mode == TableMode::Sparse {
         // Born-sparse tables carry no dense buffer to release.
@@ -962,7 +962,6 @@ unsafe fn any_of_word(w: &[u8]) -> i128 {
         }
     }
 }
-
 
 /// # Safety
 /// `p` NUL-terminated and readable through the terminator.

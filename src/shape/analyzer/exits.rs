@@ -18,7 +18,13 @@ impl Analyzer {
         rec: Gate,
         depth: usize,
         key: (*const Stmt, u8),
-    ) -> Result<(Vec<super::facts::DoExitFree>, Vec<super::facts::ArmFreeEntry>), ShapeError> {
+    ) -> Result<
+        (
+            Vec<super::facts::DoExitFree>,
+            Vec<super::facts::ArmFreeEntry>,
+        ),
+        ShapeError,
+    > {
         let (frees, arms) = match self.compute_scope_frees(depth, true) {
             Ok(v) => v,
             Err(err) => {
@@ -207,7 +213,10 @@ impl Analyzer {
                 let (spare, _) = self.housed_in_release(*site);
                 let harm = self.harm_set(*site);
                 let mut keeps: Vec<super::facts::Keep> = match &forced {
-                    Some(k) => k.iter().map(|n| super::facts::Keep::Name(n.clone())).collect(),
+                    Some(k) => k
+                        .iter()
+                        .map(|n| super::facts::Keep::Name(n.clone()))
+                        .collect(),
                     None => borrowers_of(&self.walk.scopes, &harm, depth, depth, &b.name)
                         .into_iter()
                         .map(super::facts::Keep::Name)
@@ -217,7 +226,10 @@ impl Analyzer {
                     signal!(true, trace::TRACE_ROW_GHOST_KEEP);
                     keeps.extend(spare.iter().map(|&g| super::facts::Keep::Ghost(g)));
                 }
-                if keeps.iter().any(|k| !matches!(k, super::facts::Keep::Ghost(_))) {
+                if keeps
+                    .iter()
+                    .any(|k| !matches!(k, super::facts::Keep::Ghost(_)))
+                {
                     signal!(true, trace::TRACE_ROW_KEEP_FREE);
                 }
                 self.mark_claimed(*site, &keeps);
@@ -230,7 +242,10 @@ impl Analyzer {
             for ghost in &b.ghosts {
                 let harm = self.harm_set(*ghost);
                 let keeps: Vec<super::facts::Keep> = match &forced {
-                    Some(k) => k.iter().map(|n| super::facts::Keep::Name(n.clone())).collect(),
+                    Some(k) => k
+                        .iter()
+                        .map(|n| super::facts::Keep::Name(n.clone()))
+                        .collect(),
                     None => borrowers_of(
                         &self.walk.scopes,
                         &harm,
@@ -257,7 +272,11 @@ impl Analyzer {
         Ok((frees, arm_frees))
     }
 
-    pub(super) fn decide_scope_exit(&mut self, rec: Gate, key: (*const Stmt, u8)) -> Result<(), ShapeError> {
+    pub(super) fn decide_scope_exit(
+        &mut self,
+        rec: Gate,
+        key: (*const Stmt, u8),
+    ) -> Result<(), ShapeError> {
         if !rec.on() {
             return Ok(());
         }
@@ -287,7 +306,12 @@ impl Analyzer {
     /// references nothing, so its table-typed sub-evaluations (an
     /// index base, a read-only call argument) plan as dying statement
     /// temps; a bare return keeps nothing.
-    pub(super) fn plan_return_exits(&mut self, value: Option<(&Expr, &Ty)>, reach: &BTreeSet<usize>, stmt: *const Stmt) {
+    pub(super) fn plan_return_exits(
+        &mut self,
+        value: Option<(&Expr, &Ty)>,
+        reach: &BTreeSet<usize>,
+        stmt: *const Stmt,
+    ) {
         let entry = self.fn_scope_entries.last().copied().unwrap_or(0);
         // At the boundary return nothing outlives the program: every
         // borrower dies with the unwind, so sparing rows for them
@@ -391,7 +415,12 @@ impl Analyzer {
     pub(super) fn prune_deepfree_children(&self, sites: &mut Vec<usize>) {
         let mut children: BTreeSet<usize> = BTreeSet::new();
         for &site in sites.iter() {
-            children.extend(deepfree_children(&self.lattice, &self.own, &self.reads, site));
+            children.extend(deepfree_children(
+                &self.lattice,
+                &self.own,
+                &self.reads,
+                site,
+            ));
         }
         sites.retain(|s| !children.contains(s));
     }
@@ -443,9 +472,7 @@ impl Analyzer {
                     self.plan_cond_temp_frees(condition, s);
                     self.plan_stmt_temp_frees(body);
                 }
-                Stmt::Do { body } => {
-                    self.plan_stmt_temp_frees(body)
-                }
+                Stmt::Do { body } => self.plan_stmt_temp_frees(body),
                 Stmt::If {
                     condition,
                     then_body,
@@ -463,9 +490,7 @@ impl Analyzer {
                 self.prune_deepfree_children(&mut sites);
                 if !sites.is_empty() {
                     signal!(true, trace::TRACE_STMT_TEMP_FREE_SITE);
-                    self.own
-                        .stmt_temp_frees
-                        .insert(s as *const Stmt, sites);
+                    self.own.stmt_temp_frees.insert(s as *const Stmt, sites);
                 }
             }
             // Function bodies plan their own statements — they lower at
@@ -489,9 +514,7 @@ impl Analyzer {
         self.prune_deepfree_children(&mut sites);
         if !sites.is_empty() {
             signal!(true, trace::TRACE_COND_TEMP_FREE_SITE);
-            self.own
-                .cond_temp_frees
-                .insert(stmt as *const Stmt, sites);
+            self.own.cond_temp_frees.insert(stmt as *const Stmt, sites);
         }
     }
 
@@ -651,9 +674,7 @@ impl Analyzer {
                         // no ownership leaves, the table dies with the
                         // statement; everything else is a read, and
                         // reads die.
-                        let is_moved = params
-                            .get(i)
-                            .is_some_and(|p| moved.contains(p));
+                        let is_moved = params.get(i).is_some_and(|p| moved.contains(p));
                         let is_ret = rets.contains(&i);
                         let arg_fate = if is_moved {
                             Fate::Escapes
@@ -678,7 +699,10 @@ impl Analyzer {
             }
             // Short-circuit: the right operand's block may never run,
             // so a statement-end free would fire where no birth did.
-            Expr::BinaryOp { op: BinOp::And | BinOp::Or, .. } => {}
+            Expr::BinaryOp {
+                op: BinOp::And | BinOp::Or,
+                ..
+            } => {}
             Expr::BinaryOp { left, right, .. } => {
                 self.collect_temp_sites(left, Fate::Dies, out);
                 self.collect_temp_sites(right, Fate::Dies, out);
@@ -686,8 +710,13 @@ impl Analyzer {
             Expr::UnaryOp { expr, .. } => self.collect_temp_sites(expr, Fate::Dies, out),
             // A function value owns nothing; its body plans separately.
             Expr::Function { .. } => {}
-            Expr::Integer(_) | Expr::Float(_) | Expr::Boolean(_) | Expr::String(_)
-            | Expr::Nil | Expr::Identifier(_) | Expr::SysAllocCount => {}
+            Expr::Integer(_)
+            | Expr::Float(_)
+            | Expr::Boolean(_)
+            | Expr::String(_)
+            | Expr::Nil
+            | Expr::Identifier(_)
+            | Expr::SysAllocCount => {}
         }
     }
 

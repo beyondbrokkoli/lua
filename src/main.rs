@@ -38,6 +38,25 @@ type GlmStrIntern = unsafe extern "C" fn(s: *const u8, len: usize) -> *const u8;
 // does exactly that, keying its parse off the module's own answer.
 type GlmArgKind = unsafe extern "C" fn() -> i32;
 
+/// The trace-side half of every build failure: poke the plate's
+/// BUILD_FAIL event and say so on stderr. One home so the panic hook
+/// and the staged refusals below cannot drift apart.
+fn poke_build_fail() {
+    glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_BUILD_FAIL);
+    eprintln!("GLM_TRACE: slot 1 — build failed");
+}
+
+/// Every compiler-side refusal funnels through here: print the
+/// diagnostics, mark the plate, and die — the trace event and the
+/// nonzero exit stay in lockstep by construction.
+fn fail_build(diags: &[String]) -> ! {
+    for d in diags {
+        eprintln!("{d}");
+    }
+    poke_build_fail();
+    std::process::exit(1)
+}
+
 /// One boundary word, parsed against the cell type the module itself
 /// exports (glm_arg_kind): the host-side half of the boundary
 /// contract, keyed by the module's own answer.
@@ -126,9 +145,7 @@ fn references_arg(stmts: &[Stmt]) -> bool {
             ast::Expr::Index { obj, key } => expr(obj) || expr(key),
             ast::Expr::BinaryOp { left, right, .. } => expr(left) || expr(right),
             ast::Expr::UnaryOp { expr: inner, .. } => expr(inner),
-            ast::Expr::Call { callee, args } => {
-                expr(callee) || args.iter().any(expr)
-            }
+            ast::Expr::Call { callee, args } => expr(callee) || args.iter().any(expr),
             // An inlined body executes at its call site, inside the
             // script — a read of `arg` in any body needs the table.
             ast::Expr::Function { body, .. } => go(body),
@@ -147,9 +164,7 @@ fn references_arg(stmts: &[Stmt]) -> bool {
     }
     fn go(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|s| match s {
-            Stmt::LocalDecl { exprs, .. } | Stmt::Print { exprs } => {
-                exprs.iter().any(expr)
-            }
+            Stmt::LocalDecl { exprs, .. } | Stmt::Print { exprs } => exprs.iter().any(expr),
             Stmt::Assignment { expr: value, .. } => expr(value),
             Stmt::IndexAssign { obj, key, value } => expr(obj) || expr(key) || expr(value),
             Stmt::While { condition, body } => expr(condition) || go(body),
@@ -234,10 +249,7 @@ unsafe fn run_boundary(words: &[String]) -> Result<(), String> {
                         // A string word under the dynamic contract: the
                         // intern gave the .so-identity pointer, pack it
                         // as the cell's payload now.
-                        let cell = glm_rt::glm_any_pack(
-                            glm_rt::rt::GLM_ARG_STRING,
-                            p as u64,
-                        );
+                        let cell = glm_rt::glm_any_pack(glm_rt::rt::GLM_ARG_STRING, p as u64);
                         glm_tbl_set(args, i as i64, (&cell as *const i128).cast::<u8>());
                     } else {
                         glm_tbl_set(args, i as i64, (&p as *const *const u8).cast::<u8>());
@@ -358,8 +370,7 @@ fn main() {
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_BUILD_FAIL);
-        eprintln!("GLM_TRACE: slot 1 — build failed");
+        poke_build_fail();
         default_hook(info);
     }));
 
@@ -398,61 +409,34 @@ fn main() {
         }
     }
 
-    let mut parser = parser::Parser::new(
-        tokens.into_iter().zip(offsets).collect(),
-        &source,
-    );
+    let mut parser = parser::Parser::new(tokens.into_iter().zip(offsets).collect(), &source);
     let ast = parser.parse_program();
     front_diagnostics.extend(parser.diagnostics);
 
     if !front_diagnostics.is_empty() {
-        for d in &front_diagnostics {
-            eprintln!("{d}");
-        }
-        glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_BUILD_FAIL);
-        eprintln!("GLM_TRACE: slot 1 — build failed");
-        std::process::exit(1);
+        fail_build(&front_diagnostics);
     }
 
-    let ctx = analysis::build_context(
-        &ast,
-        &parser.stmt_line_seq,
-        parser.ctor_line_seq.clone(),
-    );
+    let ctx = analysis::build_context(&ast, &parser.stmt_line_seq, parser.ctor_line_seq.clone());
 
     let mut shape = shape::analyze(&ctx);
 
     if !shape.diagnostics.is_empty() {
-        for d in &shape.diagnostics {
-            eprintln!("{d}");
-        }
-        glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_BUILD_FAIL);
-        eprintln!("GLM_TRACE: slot 1 — build failed");
-        std::process::exit(1);
+        fail_build(&shape.diagnostics);
     }
 
     let mut checker = type_checker::TypeChecker::new(&mut shape);
     checker.check_program(&ast);
 
     if !shape.diagnostics.is_empty() {
-        for d in &shape.diagnostics {
-            eprintln!("{d}");
-        }
-        glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_BUILD_FAIL);
-        eprintln!("GLM_TRACE: slot 1 — build failed");
-        std::process::exit(1);
+        fail_build(&shape.diagnostics);
     }
 
     let mut ir_lowerer = lowerer::IrLowerer::new(&shape);
     let mut ir_program = ir_lowerer.lower_program(&ast);
 
     if !ir_lowerer.diagnostics.is_empty() {
-        for d in &ir_lowerer.diagnostics {
-            eprintln!("{d}");
-        }
-        glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_BUILD_FAIL);
-        eprintln!("GLM_TRACE: slot 1 — build failed");
-        std::process::exit(1);
+        fail_build(&ir_lowerer.diagnostics);
     }
 
     // The standalone entry: an executable enters through @main. A
@@ -468,14 +452,7 @@ fn main() {
 
     let llvm_ir = match backend::generate_llvm_ir(&ir_program) {
         Ok(ir) => ir,
-        Err(diagnostics) => {
-            for d in &diagnostics {
-                eprintln!("{d}");
-            }
-            glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_BUILD_FAIL);
-            eprintln!("GLM_TRACE: slot 1 — build failed");
-            std::process::exit(1);
-        }
+        Err(diagnostics) => fail_build(&diagnostics),
     };
     std::fs::write("out.ll", llvm_ir).expect("Failed to write out.ll");
 
@@ -500,7 +477,9 @@ fn main() {
         ("libglm_out.so", "Shared library")
     };
     let mut link = std::process::Command::new("clang");
-    link.arg("-O3").arg("-Wno-override-module");
+    link.arg("-O3")
+        .arg("-Wno-override-module")
+        .arg("-fuse-ld=lld");
     if !standalone {
         link.arg("-shared").arg("-fPIC");
     }

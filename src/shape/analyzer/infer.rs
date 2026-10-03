@@ -59,12 +59,18 @@ pub(super) fn provably_nonneg(
     }
 }
 
-pub(super) fn guard_provably_nonneg_expr(num_assigns: &BTreeMap<String, Vec<NumExpr>>, expr: &Expr) -> bool {
+pub(super) fn guard_provably_nonneg_expr(
+    num_assigns: &BTreeMap<String, Vec<NumExpr>>,
+    expr: &Expr,
+) -> bool {
     let mut path = BTreeSet::new();
     provably_nonneg(num_assigns, &num_of(expr), "", &mut path)
 }
 
-pub(super) fn guard_provably_nonneg(num_assigns: &BTreeMap<String, Vec<NumExpr>>, guard: &str) -> bool {
+pub(super) fn guard_provably_nonneg(
+    num_assigns: &BTreeMap<String, Vec<NumExpr>>,
+    guard: &str,
+) -> bool {
     num_assigns.get(guard).is_some_and(|shapes| {
         let mut path = BTreeSet::new();
         shapes
@@ -192,8 +198,7 @@ impl Analyzer {
                     // later literal reads of the slot resolve their
                     // ghosts onto it.
                     if let CtorKey::Const(c) = k
-                        && let Some(&child) =
-                            self.lattice.sites.get(&(e as *const Expr))
+                        && let Some(&child) = self.lattice.sites.get(&(e as *const Expr))
                         && matches!(e, Expr::TableCtor(_))
                     {
                         self.lattice
@@ -248,7 +253,8 @@ impl Analyzer {
                             // borrows (all roots with lineage) still
                             // refuse, and the sole-housing, cycle, and
                             // claimed-row gates apply verbatim.
-                            let entry_ghosts: Vec<usize> = esites.iter().copied().filter(is_ghost).collect();
+                            let entry_ghosts: Vec<usize> =
+                                esites.iter().copied().filter(is_ghost).collect();
                             if !entry_ghosts.is_empty() {
                                 signal!(rec.on(), trace::TRACE_ROW_HOUSING);
                                 for &g in &entry_ghosts {
@@ -262,9 +268,7 @@ impl Analyzer {
                                                 .to_string(),
                                         ));
                                     };
-                                    if id == birth
-                                        || self.birth_closure(id).contains(&birth)
-                                    {
+                                    if id == birth || self.birth_closure(id).contains(&birth) {
                                         signal!(rec.on(), trace::TRACE_FAIL_ROW_STORE);
                                         return Err(ShapeError(
                                             "Lifetime Error: cyclic row store — the row \
@@ -369,7 +373,11 @@ impl Analyzer {
                     // mark every carrier the result is stored into as
                     // heterogeneous. Genuine scalars stay Conflict (the
                     // checker rejects them with a precise message).
-                    let r = if matches!(t, Pending) { Pending } else { Conflict };
+                    let r = if matches!(t, Pending) {
+                        Pending
+                    } else {
+                        Conflict
+                    };
                     for (&origin, (name, d)) in &lineage {
                         if is_ghost(&origin) {
                             continue;
@@ -680,8 +688,12 @@ impl Analyzer {
                         && let Some(stored) = &stored_params
                         && stored.contains(p)
                     {
-                        self.fn_param_sites
-                            .extend(sites.iter().copied().filter(|s| !is_root(s) && !is_ghost(s)));
+                        self.fn_param_sites.extend(
+                            sites
+                                .iter()
+                                .copied()
+                                .filter(|s| !is_root(s) && !is_ghost(s)),
+                        );
                     }
                     // A parameter the body hands straight back carries
                     // the argument's ctor sites into the call result:

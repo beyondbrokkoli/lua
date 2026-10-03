@@ -1,6 +1,6 @@
 use crate::ast::StaticType;
 use crate::ir::{
-    BlockId, Bool, CellGet, CellSet, CellSetFast, CmpRegs, EntryKind, Int, Instruction, IrProgram,
+    BlockId, Bool, CellGet, CellSet, CellSetFast, CmpRegs, EntryKind, Instruction, Int, IrProgram,
     MoveRegs, NumRegs, NumRegsRhs, PhiRegs, Ptr, Reg, Repr, Terminator, UnaryNum,
 };
 use crate::shape::LayoutVerdict;
@@ -289,15 +289,9 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                 Instruction::Less(c) => {
                     cmp_regs(c, "slt", "olt", &mut code, &mut needs_any_eq_decl)
                 }
-                Instruction::Leq(c) => {
-                    cmp_regs(c, "sle", "ole", &mut code, &mut needs_any_eq_decl)
-                }
-                Instruction::Geq(c) => {
-                    cmp_regs(c, "sge", "oge", &mut code, &mut needs_any_eq_decl)
-                }
-                Instruction::Eq(c) => {
-                    cmp_regs(c, "eq", "oeq", &mut code, &mut needs_any_eq_decl)
-                }
+                Instruction::Leq(c) => cmp_regs(c, "sle", "ole", &mut code, &mut needs_any_eq_decl),
+                Instruction::Geq(c) => cmp_regs(c, "sge", "oge", &mut code, &mut needs_any_eq_decl),
+                Instruction::Eq(c) => cmp_regs(c, "eq", "oeq", &mut code, &mut needs_any_eq_decl),
                 Instruction::Not { target, source } => {
                     code.push_str(&format!("  %v{} = xor i1 %v{}, 1\n", target.id, source.id));
                 }
@@ -375,9 +369,7 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
             )),
             // The boundary value: a returned table pointer crosses to
             // the host; every other fall-out of the block returns null.
-            Some(Terminator::Return(val)) => {
-                code.push_str(&format!("  ret ptr %v{}\n", val.id))
-            }
+            Some(Terminator::Return(val)) => code.push_str(&format!("  ret ptr %v{}\n", val.id)),
             Some(Terminator::Halt) | None => code.push_str("  ret ptr null\n"),
         }
     }
@@ -521,9 +513,7 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
         head.push_str("declare void @glm_str_register(ptr, i64)\n");
     }
     if needs_exec_main_decl {
-        head.push_str(
-            "declare i32 @glm_exec_main(i32, ptr, i32, ptr)\n",
-        );
+        head.push_str("declare i32 @glm_exec_main(i32, ptr, i32, ptr)\n");
     }
 
     // The runtime anchor: a .so whose own code references no runtime
@@ -580,7 +570,10 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     } else {
         String::new()
     };
-    Ok(format!("{}{}{}{}{}{}", globals, registry, head, anchor, out, md))
+    Ok(format!(
+        "{}{}{}{}{}{}",
+        globals, registry, head, anchor, out, md
+    ))
 }
 
 fn emit_move(m: &MoveRegs, code: &mut String) {

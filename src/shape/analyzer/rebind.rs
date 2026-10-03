@@ -149,14 +149,16 @@ impl Analyzer {
             .flat_map(|a| a.aliases.iter().copied())
             .filter(|s| !is_root(s))
             .collect();
-        let mine: BTreeSet<usize> = shape.aliases.iter().copied().filter(|s| !is_root(s)).collect();
+        let mine: BTreeSet<usize> = shape
+            .aliases
+            .iter()
+            .copied()
+            .filter(|s| !is_root(s))
+            .collect();
         if arms.is_empty() || union != mine {
             return fallback(self);
         }
-        let defer: Vec<bool> = arms
-            .iter()
-            .map(|a| self.plan_arm(name, depth, a))
-            .collect();
+        let defer: Vec<bool> = arms.iter().map(|a| self.plan_arm(name, depth, a)).collect();
         if defer.iter().all(|&d| d) {
             return MixedPlan::Suppress;
         }
@@ -192,7 +194,12 @@ impl Analyzer {
         }
     }
 
-    pub(super) fn arm_keeps_union(&self, name: &str, depth: usize, shape: &TableShape) -> Vec<String> {
+    pub(super) fn arm_keeps_union(
+        &self,
+        name: &str,
+        depth: usize,
+        shape: &TableShape,
+    ) -> Vec<String> {
         let mut release: BTreeSet<usize> = BTreeSet::new();
         for &r in shape.aliases.iter().filter(|s| !is_root(s)) {
             release.extend(release_set(&self.lattice, &self.own, &self.reads, r));
@@ -206,7 +213,12 @@ impl Analyzer {
         )
     }
 
-    pub(super) fn drop_reference(&mut self, rec: Gate, name: &str, stmt: &Stmt) -> Result<(), ShapeError> {
+    pub(super) fn drop_reference(
+        &mut self,
+        rec: Gate,
+        name: &str,
+        stmt: &Stmt,
+    ) -> Result<(), ShapeError> {
         let (depth, bind) = self.resolve(rec, name)?;
         let roots: Vec<usize> = bind
             .aliases
@@ -244,14 +256,16 @@ impl Analyzer {
                         keeps,
                     } => {
                         signal!(rec.on(), trace::TRACE_JOIN_ARM_SPLIT);
-                        self.own.arm_free_sites.entry(stmt as *const Stmt).or_default().push(
-                            super::facts::ArmFreeEntry {
+                        self.own
+                            .arm_free_sites
+                            .entry(stmt as *const Stmt)
+                            .or_default()
+                            .push(super::facts::ArmFreeEntry {
                                 carrier: name.to_string(),
                                 tag,
                                 nothing_on,
                                 keeps: keeps.into_iter().map(super::facts::Keep::Name).collect(),
-                            },
-                        );
+                            });
                         signal!(rec.on(), trace::TRACE_SHAPE_DROP);
                     }
                 }
@@ -341,7 +355,9 @@ impl Analyzer {
                 }
                 self.own.free_sites.insert(stmt as *const Stmt);
                 if !keeps.is_empty() {
-                    self.own.free_keeps.insert(stmt as *const Stmt, keeps.clone());
+                    self.own
+                        .free_keeps
+                        .insert(stmt as *const Stmt, keeps.clone());
                 }
                 for &r in &roots {
                     self.mark_claimed(r, &keeps);
@@ -462,9 +478,15 @@ impl Analyzer {
             harm.extend(self.harm_set(d));
         }
         keeps.extend(
-            borrowers_of(&self.walk.scopes, &harm, self.walk.scopes.len(), _depth, name)
-                .into_iter()
-                .map(super::facts::Keep::Name),
+            borrowers_of(
+                &self.walk.scopes,
+                &harm,
+                self.walk.scopes.len(),
+                _depth,
+                name,
+            )
+            .into_iter()
+            .map(super::facts::Keep::Name),
         );
         for &d in &died {
             let (spare, _) = self.housed_in_release(d);

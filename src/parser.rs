@@ -577,8 +577,7 @@ impl<'a> Parser<'a> {
     fn parse_table_ctor(&mut self) -> Result<Expr, ParseError> {
         // Pre-order ctor line (the `{` just consumed); site ids in
         // analysis::number_sites follow this same order.
-        self.ctor_line_seq
-            .push(self.line_of(self.tokens.last_off));
+        self.ctor_line_seq.push(self.line_of(self.tokens.last_off));
         if matches!(self.tokens.peek(), Some(Token::RightBrace)) {
             self.tokens.next();
             glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_PARSE_TBL_EMPTY);

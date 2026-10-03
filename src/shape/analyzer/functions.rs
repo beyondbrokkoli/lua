@@ -163,7 +163,11 @@ impl Analyzer {
     /// reads (`arg[i]`) are copies and stay legal — a move would let a
     /// script-side drop or the returned table's deep free collide with
     /// the host's own glm_tbl_free.
-    pub(super) fn check_boundary_pin(&self, bind: &TableShape, src: &str) -> Result<(), ShapeError> {
+    pub(super) fn check_boundary_pin(
+        &self,
+        bind: &TableShape,
+        src: &str,
+    ) -> Result<(), ShapeError> {
         if bind.aliases.contains(&BOUNDARY_ROOT) {
             return Err(ShapeError(format!(
                 "Lifetime Error: the boundary table '{src}' is pinned — the host owns \

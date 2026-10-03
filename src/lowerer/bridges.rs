@@ -150,12 +150,10 @@ pub(super) fn phi_push(phi: &mut PhiRegs, block: BlockId, reg: AnyReg) -> Result
         PhiRegs::Ptr { args, .. } => {
             args.push((block, <Ptr as PhiRepr>::of(reg).ok_or_else(mismatch)?))
         }
-        PhiRegs::Any { args, .. } => {
-            args.push((
-                block,
-                <crate::ir::Any as PhiRepr>::of(reg).ok_or_else(mismatch)?,
-            ))
-        }
+        PhiRegs::Any { args, .. } => args.push((
+            block,
+            <crate::ir::Any as PhiRepr>::of(reg).ok_or_else(mismatch)?,
+        )),
     }
     Ok(())
 }

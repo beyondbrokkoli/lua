@@ -284,7 +284,10 @@ impl<'a> IrLowerer<'a> {
             self.emit(Instruction::TableFree { table });
         } else {
             signal!(trace::TRACE_DO_EXIT_KEEP_FREE);
-            self.emit(Instruction::TableFreeExcept { table, keeps: keep_regs });
+            self.emit(Instruction::TableFreeExcept {
+                table,
+                keeps: keep_regs,
+            });
         }
         self.terminate(Terminator::Jump(cont));
         self.current_block = nothing_block;
@@ -493,7 +496,10 @@ impl<'a> IrLowerer<'a> {
             Local {
                 reg: AnyReg::Ptr(Reg::new(args_reg)),
                 ty: StaticType::Table(Box::new(
-                    self.shape.boundary_elem.clone().unwrap_or(StaticType::Unknown(0)),
+                    self.shape
+                        .boundary_elem
+                        .clone()
+                        .unwrap_or(StaticType::Unknown(0)),
                 )),
                 layout: LayoutVerdict::default(),
             },
@@ -509,11 +515,7 @@ impl<'a> IrLowerer<'a> {
             match self.lower_stmt(stmt) {
                 Ok(_) => {}
                 Err(e) => {
-                    let line = self
-                        .shape
-                        .stmt_lines
-                        .get(&(stmt as *const Stmt))
-                        .copied();
+                    let line = self.shape.stmt_lines.get(&(stmt as *const Stmt)).copied();
                     self.diagnostics.push(match line {
                         Some(l) => format!("line {l}: {}", e.0),
                         None => e.0,
@@ -567,7 +569,9 @@ impl<'a> IrLowerer<'a> {
                 AnyReg::Bool(Reg::new(r))
             }
             RegKind::Ptr => {
-                self.emit(Instruction::LoadNull { target: Reg::new(r) });
+                self.emit(Instruction::LoadNull {
+                    target: Reg::new(r),
+                });
                 AnyReg::Ptr(Reg::new(r))
             }
             RegKind::Any => {
@@ -1241,9 +1245,7 @@ impl<'a> IrLowerer<'a> {
                     }
                     let mut regs: Vec<Reg<Ptr>> = keep_temps
                         .iter()
-                        .filter_map(|site| {
-                            self.handles.site_regs.get(site).map(|(reg, _)| *reg)
-                        })
+                        .filter_map(|site| self.handles.site_regs.get(site).map(|(reg, _)| *reg))
                         .collect();
                     regs.sort_unstable_by_key(|reg| reg.id);
                     regs.dedup_by_key(|reg| reg.id);
@@ -1380,7 +1382,8 @@ impl<'a> IrLowerer<'a> {
                         vec![(then_end, AnyReg::Bool(t)), (else_end, AnyReg::Bool(e))],
                     )?;
                     self.emit(Instruction::Phi(phi));
-                    self.if_tag_regs.insert(stmt as *const Stmt, Reg::new(tag_reg));
+                    self.if_tag_regs
+                        .insert(stmt as *const Stmt, Reg::new(tag_reg));
                 }
                 for (i, (name, _)) in phi_order.iter().enumerate() {
                     let phi_reg = self.next_reg();
@@ -1502,7 +1505,9 @@ impl<'a> IrLowerer<'a> {
                 // A function has no runtime representation — its body
                 // inlines at each call site. This placeholder only
                 // fills the binding's register slot; nothing reads it.
-                self.emit(Instruction::LoadNull { target: Reg::new(reg) });
+                self.emit(Instruction::LoadNull {
+                    target: Reg::new(reg),
+                });
                 Ok(TypedReg {
                     reg: AnyReg::Ptr(Reg::new(reg)),
                     ty: StaticType::Unknown(0),
@@ -1552,7 +1557,9 @@ impl<'a> IrLowerer<'a> {
 
                 self.inline_stack.push(fn_ptr);
                 self.return_ctxs.push(ReturnCtx {
-                    kind: ReturnKind::Inline { ty: def.ret.clone() },
+                    kind: ReturnKind::Inline {
+                        ty: def.ret.clone(),
+                    },
                     exit: None,
                     args: Vec::new(),
                 });
@@ -1586,13 +1593,14 @@ impl<'a> IrLowerer<'a> {
                 // frees nothing either way, class false).
                 if let Some(classes) = self.shape.call_tags.get(&(expr as *const Expr)).cloned() {
                     let exit = self.current_block;
-                    let edge_blocks: Vec<BlockId> =
-                        self.blocks[exit].instrs.iter().find_map(|i| match i {
-                            Instruction::Phi(p) => Some(
-                                p.arg_blocks().to_vec(),
-                            ),
+                    let edge_blocks: Vec<BlockId> = self.blocks[exit]
+                        .instrs
+                        .iter()
+                        .find_map(|i| match i {
+                            Instruction::Phi(p) => Some(p.arg_blocks().to_vec()),
                             _ => None,
-                        }).unwrap_or_default();
+                        })
+                        .unwrap_or_default();
                     if edge_blocks.len() < classes.len() {
                         return Err(LowerError(
                             "Lower Error: a tagged call's return edges went missing — \
@@ -1613,7 +1621,8 @@ impl<'a> IrLowerer<'a> {
                     let tag_reg = self.next_reg();
                     let phi = phi_of(RegKind::Bool, tag_reg, tag_args)?;
                     self.emit(Instruction::Phi(phi));
-                    self.call_tag_regs.insert(expr as *const Expr, Reg::new(tag_reg));
+                    self.call_tag_regs
+                        .insert(expr as *const Expr, Reg::new(tag_reg));
                 }
                 self.inline_stack.pop();
                 Ok(TypedReg {

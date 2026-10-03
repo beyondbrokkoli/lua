@@ -339,8 +339,9 @@ impl Analyzer {
             if is_ghost(&b) {
                 r = join_ty(&r, &self.ghost_row_elem(b));
             } else if !is_root(&b)
-                && let Tbl(inner) = &self.lattice.site_elem[b] {
-                    r = join_ty(&r, inner.as_ref());
+                && let Tbl(inner) = &self.lattice.site_elem[b]
+            {
+                r = join_ty(&r, inner.as_ref());
             }
         }
         r
@@ -359,9 +360,7 @@ impl Analyzer {
             self.lattice.ghost_mints.get(&a),
             self.lattice.ghost_mints.get(&b),
         ) {
-            (Some(ma), Some(mb)) => {
-                ma.key == mb.key && !ma.bases.is_disjoint(&mb.bases)
-            }
+            (Some(ma), Some(mb)) => ma.key == mb.key && !ma.bases.is_disjoint(&mb.bases),
             _ => false,
         }
     }
@@ -381,12 +380,7 @@ impl Analyzer {
         shape: &TableShape,
         moved_srcs: &[(usize, String)],
     ) -> Result<(), ShapeError> {
-        let new_ghosts: Vec<usize> = shape
-            .aliases
-            .iter()
-            .copied()
-            .filter(is_ghost)
-            .collect();
+        let new_ghosts: Vec<usize> = shape.aliases.iter().copied().filter(is_ghost).collect();
         if new_ghosts.is_empty() {
             return Ok(());
         }
