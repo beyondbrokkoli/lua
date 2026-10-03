@@ -11,6 +11,8 @@ use super::facts::ShapeFacts;
 use super::helpers::{const_key_value, extract_guard, merge_table_scopes};
 use super::ty::{Ty, arith_ty, join_ty, scalar};
 use Ty::{Bool, Conflict, Flt, Int, Pending, Str, Tbl};
+// The boundary seed mints its element Pending — children resolve their
+// own Ints through the flat re-export below.
 // Module-name binding: children resolve `super::facts::` through here
 // (their `super` is this module, not `shape`).
 use super::facts;
@@ -61,7 +63,13 @@ fn boundary_root_scope() -> BTreeMap<String, TableShape> {
     scope.insert(
         "arg".to_string(),
         TableShape {
-            ty: Tbl(Box::new(Int)),
+            // Pending, not Int: the element type is not the analyzer's
+            // to know — the checker's usage inference resolves it after
+            // this pass (an arithmetic operand, a comparison, a store,
+            // a constructor element, a print). Root sites never join
+            // the elem lattice below, so Pending here only rides the
+            // seed the later passes read.
+            ty: Tbl(Box::new(Pending)),
             layout: LayoutVerdict::default(),
             aliases: BTreeSet::from([BOUNDARY_ROOT]),
             lineage: BTreeMap::new(),
@@ -202,6 +210,14 @@ struct ReadSideState {
     row_reads: BTreeMap<usize, (String, usize)>,
     row_links: BTreeMap<usize, BTreeSet<usize>>,
     user_store_sites: BTreeSet<usize>,
+    // Sites whose element arrived as a Pending value in a store or
+    // constructor entry — at the root scope that Pending can only be a
+    // boundary read (`arg[i]`, the seed's element resolves in the
+    // checker, not here) or a read of a site that errors on its own.
+    // Insert-only across passes: a needed+Pending site in the final
+    // pass whose values were all non-Pending resolves normally, and a
+    // false member only ever shadows an error that fires anyway.
+    boundary_fed: BTreeSet<usize>,
 }
 
 struct LayoutFactsState {
@@ -496,6 +512,7 @@ pub fn analyze(ctx: &AnalysisContext<'_>) -> ShapeFacts {
             row_reads: BTreeMap::new(),
             row_links: BTreeMap::new(),
             user_store_sites: BTreeSet::new(),
+            boundary_fed: BTreeSet::new(),
         },
         layout: LayoutFactsState {
             name_dense: BTreeMap::new(),
@@ -619,6 +636,16 @@ impl Recorded {
                     elems[id] = crate::ast::StaticType::Unknown(id);
                     continue;
                 }
+                // Boundary-fed sites: the element crossed as a boundary
+                // read (`arg[i]`), whose type the checker's usage
+                // inference pins — the analyzer only ever sees Pending
+                // here, so the site defers to its Unknown and the
+                // checker's unify binds it.
+                if self.reads.boundary_fed.contains(&id) {
+                    signal!(self.recording, trace::TRACE_ANALYZE_PENDING);
+                    elems[id] = crate::ast::StaticType::Unknown(id);
+                    continue;
+                }
                 signal!(self.recording, trace::TRACE_ANALYZE_MISSING_VALUE);
                 let line = self.ctor_lines[id];
                 self.ledger.diagnostics.push(format!(
@@ -666,6 +693,9 @@ impl Recorded {
         ShapeFacts {
             sites: self.lattice.sites,
             elems,
+            // The pre-checker default: the checker's usage inference
+            // writes the resolved cell type here after its pass.
+            boundary_elem: crate::ast::StaticType::Integer,
             layouts: self.layout.verdicts,
             free_sites: self.own.free_sites,
             free_keeps: self.own.free_keeps,

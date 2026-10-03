@@ -1,5 +1,9 @@
-#[derive(Debug, Clone, PartialEq)]
+// The boundary-era compatibility default: an unconstrained `arg`
+// element is Integer, the one cell type the host passed before usage
+// inference existed. ShapeFacts::default rides this for boundary_elem.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum StaticType {
+    #[default]
     Integer,
     Float,
     Boolean,

@@ -28,6 +28,11 @@
 0   COMPILED               compiler  compiled ok
 1   BUILD_FAIL             compiler  build failed (EXPECT_BUILD_FAIL)
 
+3   BOUNDARY_ELEM_PINNED    checker   boundary element pinned by usage: the arg table's cell type resolved off the Integer default through the script's own code (an arithmetic operand, a comparison, a condition, a store, a constructor entry, or an equality) — the host parses the CLI words against the pinned type
+5   STRTAB_EMIT            backend   string-literal registry emitted: the module's distinct literals collected into one constant array registered with the runtime at load (an .init_array constructor), so boundary string cells intern to the same pointer identity the script's own literals hold
+8   RT_STR_INTERN          runtime   runtime string intern allocated: a boundary string content seen neither in the module's literal registry nor the dynamic intern map materialized as its own immortal copy — pool semantics extended across the boundary
+9   RT_STR_POOL_HIT        runtime   boundary string word matched a registered module literal: the cell holds the literal's own address (identity equality with the script's strings, no allocation)
+
 2   DO_EXIT_FREE_SITE      analyzer  do-exit free granted: heap site solely owned by the dying scope, freed once
 4   DO_EXIT_ALIAS_SURVIVES analyzer  do-exit refused, lineage twin: the exit free would deep-free a subtree whose rows a binding OUTSIDE the block still reads — a block-local move is legal and sound under affine identity, so cross-block lineage reads are the only refusal face
 6   DO_EXIT_FREE_PHI      lowerer   do-exit/root free emitted through a dying name's CURRENT register — a join phi for conditionally-bound sites, the birth register in straight-line code; under affine the register is faithful (its own sites' headers or null exactly where an inner free/move ran), so one TableFree per register is sound with no routing; the root chunk's exit pass emits through the same path

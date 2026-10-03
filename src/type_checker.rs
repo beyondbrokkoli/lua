@@ -36,6 +36,20 @@ pub struct TypeChecker<'a> {
     // The chain of function bodies currently being inline-checked — a
     // call reaching back into itself cannot be inlined.
     inline_stack: Vec<*const Expr>,
+    // The boundary `arg` seed's unknown id: `local arg` shadows the
+    // seed and the seed then never unifies, so the finalizer needs to
+    // know the unknown it owns (None) from one that merely stayed
+    // unconstrained.
+    arg_elem_id: Option<usize>,
+}
+
+/// The head unknown of a freshly seeded boundary element — fresh_unknown
+/// mints descending ids, so this is the id the finalizer binds on default.
+fn arg_elem_id(ty: &StaticType) -> usize {
+    match ty {
+        StaticType::Unknown(id) => *id,
+        _ => unreachable!("the boundary seed is minted as an unknown"),
+    }
 }
 
 impl<'a> TypeChecker<'a> {
@@ -49,6 +63,7 @@ impl<'a> TypeChecker<'a> {
             bare_ids: BTreeMap::new(),
             return_ctxs: vec![ReturnCtx::Boundary],
             inline_stack: Vec::new(),
+            arg_elem_id: None,
         }
     }
 
@@ -105,16 +120,82 @@ impl<'a> TypeChecker<'a> {
 
     pub fn check_program(&mut self, stmts: &[Stmt]) {
         // The FFI boundary: `arg` names the table the host passes
-        // across @glm_exec's parameter — 8-byte integer cells, the
-        // one contract both sides of the boundary share. Seeded, not
-        // declared: an explicit `local arg` shadows it (root scope).
+        // across @glm_exec's parameter. The element type starts as a
+        // fresh unknown and is pinned by usage — the first position
+        // that demands a type (an arithmetic operand, a comparison, a
+        // condition, a store, a constructor entry, an equality)
+        // unifies it, so `arg[0] + 1` makes Integer cells and
+        // `arg[0] == "x"` String cells. An unconstrained element
+        // stays Integer, the one cell type the host passed before
+        // usage inference existed. Seeded, not declared: an explicit
+        // `local arg` shadows it (root scope) — the seed unknown then
+        // never unifies and defaults to Integer.
+        let arg_elem = self.fresh_unknown();
+        self.arg_elem_id = Some(arg_elem_id(&arg_elem));
         self.scopes[0].insert(
             "arg".to_string(),
-            StaticType::Table(Box::new(StaticType::Integer)),
+            StaticType::Table(Box::new(arg_elem)),
         );
         self.check_block(stmts);
+        self.finalize_boundary_elem();
         self.resolve_all_scopes();
         self.shape.check_row_reads();
+    }
+
+    /// Resolve the boundary element to the type the script's own code
+    /// demanded, defaulting an unconstrained (or shadowed) element to
+    /// Integer, and write it where the lowerer and the host read it.
+    /// The bind lands in the substitution maps, so every scope value,
+    /// bare-local type, and fn signature still carrying the unknown
+    /// resolves through it — the lowerer then never sees an unknown
+    /// behind `arg`. A Table demand is rejected: boundary cells hold
+    /// scalars the host parses off the command line, never tables.
+    fn finalize_boundary_elem(&mut self) {
+        let elem = match self.arg_elem_id {
+            Some(id) => {
+                let resolved = self.resolve_var(&StaticType::Unknown(id));
+                match resolved {
+                    StaticType::Unknown(_) => {
+                        // Follow the chain to its head unknown and bind
+                        // THAT one: a unify against a constructor's
+                        // element unknown may have left the arg unknown
+                        // pointing at it, and both must resolve. The
+                        // bind cannot fail the occurs check — Integer
+                        // contains no unknowns.
+                        if let StaticType::Unknown(head) = resolved {
+                            let _ = self.bind(head, StaticType::Integer);
+                        }
+                        StaticType::Integer
+                    }
+                    StaticType::Table(_) => {
+                        self.shape.diagnostics.push(
+                            "Type Error: the boundary 'arg' table's cells hold scalars — \
+                             a table element cannot be inferred from 'arg[i]' usage"
+                                .to_string(),
+                        );
+                        return;
+                    }
+                    concrete => concrete,
+                }
+            }
+            None => StaticType::Integer,
+        };
+        if elem != StaticType::Integer {
+            signal!(trace::TRACE_BOUNDARY_ELEM_PINNED);
+        }
+        self.shape.boundary_elem = elem.clone();
+        // Fn signatures and returns captured the unknown at their call
+        // sites, before the default bind — re-resolve them through the
+        // now-complete substitutions so the lowerer's inline expansion
+        // sees the same concrete types every other position does.
+        for def in self.shape.fn_defs.values_mut() {
+            def.ret = Self::resolve_through(&self.substitutions, &def.ret);
+            if let Some(sig) = &mut def.signature {
+                for ty in sig.iter_mut() {
+                    *ty = Self::resolve_through(&self.substitutions, ty);
+                }
+            }
+        }
     }
 
     fn check_block(&mut self, stmts: &[Stmt]) {
@@ -381,6 +462,9 @@ impl<'a> TypeChecker<'a> {
 
     fn check_condition(&mut self, condition: &Expr, kw: &str) -> Result<(), String> {
         let ty = self.check_expr(condition)?;
+        // Usage inference: an unknown condition operand (a boundary
+        // cell) pins to Boolean — `if arg[0] then` means Bool cells.
+        let ty = self.pin_bool(&ty)?;
         if ty != StaticType::Boolean {
             return Err(format!(
                 "Type Error: '{}' condition must be a Boolean, got {}",
@@ -431,11 +515,22 @@ impl<'a> TypeChecker<'a> {
                             self.unify(expected_inner, actual_inner)?;
                         }
                     } else if ty != elem {
-                        return Err(format!(
-                            "Type Error: mixed table constructor elements — {} after {}",
-                            type_name(&ty),
-                            type_name(&elem)
-                        ));
+                        // A ctor element disagreeing with the site's
+                        // running element is a conflict — unless one
+                        // side is an unresolved unknown (a boundary
+                        // cell, a bare local): usage inference unifies
+                        // it, so `local u = {arg[0], 2}` pins the
+                        // boundary to Integer cells and the ctor to a
+                        // Table<Integer>.
+                        self.unify(&elem, &ty)?;
+                        let resolved = self.resolve_var(&ty);
+                        if resolved != self.resolve_var(&elem) {
+                            return Err(format!(
+                                "Type Error: mixed table constructor elements — {} after {}",
+                                type_name(&ty),
+                                type_name(&elem)
+                            ));
+                        }
                     }
                 }
                 Ok(StaticType::Table(Box::new(elem)))
@@ -457,6 +552,10 @@ impl<'a> TypeChecker<'a> {
                 let r = self.check_expr(right)?;
                 match op {
                     BinOp::And | BinOp::Or => {
+                        // Usage inference: an unknown operand pins to
+                        // Boolean — `arg[0] and arg[1]` means Bool cells.
+                        let l = self.pin_bool(&l)?;
+                        let r = self.pin_bool(&r)?;
                         if l == StaticType::Boolean && r == StaticType::Boolean {
                             Ok(StaticType::Boolean)
                         } else {
@@ -473,8 +572,14 @@ impl<'a> TypeChecker<'a> {
                         self.numeric_operand(&l, &r, op)
                     }
                     BinOp::Div => {
+                        // An unknown operand pins to its partner before
+                        // the numeric demand — `arg[0] / 2` is Integer
+                        // cells, `arg[0] / 2.0` Float.
+                        self.infer_numeric_pair(&l, &r)?;
+                        let l = self.resolve_var(&l);
+                        let r = self.resolve_var(&r);
                         if !matches!(
-                            (l, r),
+                            (&l, &r),
                             (
                                 StaticType::Integer | StaticType::Float,
                                 StaticType::Integer | StaticType::Float
@@ -489,6 +594,15 @@ impl<'a> TypeChecker<'a> {
                         Ok(StaticType::Boolean)
                     }
                     BinOp::Equal | BinOp::NotEqual => {
+                        // Usage inference: an unknown against a concrete
+                        // scalar pins to it — `arg[0] == "x"` makes String
+                        // cells, `arg[0] == true` Boolean cells. A Table
+                        // partner stays un-pinned (params may be tables;
+                        // the boundary's cells never are — the finalizer
+                        // rejects a Table elem).
+                        self.pin_scalar_pair(&l, &r)?;
+                        let l = self.resolve_var(&l);
+                        let r = self.resolve_var(&r);
                         // String equality is identity over the pool intern
                         // space: each distinct literal holds one address, so
                         // the compare is an icmp on the shared Ptr repr. A
@@ -509,6 +623,24 @@ impl<'a> TypeChecker<'a> {
                                 type_name(if l == StaticType::String { &r } else { &l })
                             ));
                         }
+                        // A boundary cell compared with a table: the
+                        // cell can never hold one (the finalizer rejects
+                        // a Table element), so name it now instead of
+                        // leaving an unknown that would lower as a
+                        // repr mismatch. A bare local keeps today's
+                        // null-pointer compare.
+                        let l_unk = matches!(l, StaticType::Unknown(_));
+                        let r_unk = matches!(r, StaticType::Unknown(_));
+                        if (l_unk && matches!(r, StaticType::Table(_))
+                            || r_unk && matches!(l, StaticType::Table(_)))
+                            && (self.is_boundary_chained(&l) || self.is_boundary_chained(&r))
+                        {
+                            return Err(
+                                "Type Error: '==' compares a boundary cell with a table — \
+                                 boundary cells hold scalars"
+                                    .to_string(),
+                            );
+                        }
                         if !types_compatible(&l, &r) {
                             return Err(format!(
                                 "Type Error: '{}' compares {} with {}",
@@ -527,14 +659,29 @@ impl<'a> TypeChecker<'a> {
             Expr::UnaryOp { op, expr } => {
                 let t = self.check_expr(expr)?;
                 match op {
-                    UnOp::Neg => match t {
-                        StaticType::Integer | StaticType::Float => Ok(t),
-                        _ => Err("Type Error: unary '-' requires a numeric operand".to_string()),
-                    },
-                    UnOp::Not => match t {
-                        StaticType::Boolean => Ok(StaticType::Boolean),
-                        _ => Err("Type Error: 'not' requires a Boolean operand".to_string()),
-                    },
+                    UnOp::Neg => {
+                        // Usage inference: an unknown operand of unary
+                        // '-' pins to Integer (the numeric default).
+                        let t = self.resolve_var(&t);
+                        let t = if let StaticType::Unknown(id) = t {
+                            self.bind(id, StaticType::Integer)?;
+                            StaticType::Integer
+                        } else {
+                            t
+                        };
+                        match t {
+                            StaticType::Integer | StaticType::Float => Ok(t),
+                            _ => Err("Type Error: unary '-' requires a numeric operand".to_string()),
+                        }
+                    }
+                    UnOp::Not => {
+                        // Usage inference: `not arg[0]` means Bool cells.
+                        let t = self.pin_bool(&t)?;
+                        match t {
+                            StaticType::Boolean => Ok(StaticType::Boolean),
+                            _ => Err("Type Error: 'not' requires a Boolean operand".to_string()),
+                        }
+                    }
                     UnOp::Len => match self.resolve_var(&t) {
                         StaticType::Table(_) | StaticType::String => Ok(StaticType::Integer),
                         _ => Err(format!(
@@ -663,12 +810,15 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn numeric_operand(
-        &self,
+        &mut self,
         l: &StaticType,
         r: &StaticType,
         op: &BinOp,
     ) -> Result<StaticType, String> {
-        match (l, r) {
+        // Usage inference: an unknown operand (a boundary cell, a bare
+        // local) takes its partner's numeric type before the demand.
+        let (l, r) = self.infer_numeric_pair(l, r)?;
+        match (&l, &r) {
             (StaticType::Integer, StaticType::Integer) => Ok(StaticType::Integer),
             (StaticType::Float, StaticType::Float) => Ok(StaticType::Float),
             (StaticType::Integer, StaticType::Float) | (StaticType::Float, StaticType::Integer) => {
@@ -688,6 +838,111 @@ impl<'a> TypeChecker<'a> {
 impl<'a> TypeChecker<'a> {
     fn resolve_var(&self, ty: &StaticType) -> StaticType {
         Self::resolve_through(&self.substitutions, ty)
+    }
+
+    /// Whether an unresolved unknown is chained to the boundary seed —
+    /// an `arg` cell read, or a value a parameter carried from one
+    /// (unification links unknowns into chains; two unknowns share a
+    /// head iff they are chained). Bare locals mint their own unknowns
+    /// and stay outside.
+    fn is_boundary_chained(&self, ty: &StaticType) -> bool {
+        let Some(seed) = self.arg_elem_id else {
+            return false;
+        };
+        matches!(
+            (
+                self.resolve_var(ty),
+                self.resolve_var(&StaticType::Unknown(seed)),
+            ),
+            (StaticType::Unknown(a), StaticType::Unknown(b)) if a == b
+        )
+    }
+
+    /// Pin an unknown operand to Boolean — a condition, `and`/`or`, or
+    /// `not` demanding a Bool makes the boundary cell type Bool.
+    fn pin_bool(&mut self, ty: &StaticType) -> Result<StaticType, String> {
+        let resolved = self.resolve_var(ty);
+        if let StaticType::Unknown(id) = resolved {
+            self.bind(id, StaticType::Boolean)?;
+            return Ok(StaticType::Boolean);
+        }
+        Ok(resolved)
+    }
+
+    /// Pin a pair of numeric operands: an unknown takes its concrete
+    /// numeric partner's type; two unknowns take Integer, the boundary
+    /// default — `arg[0] + 1` is Integer cells, `arg[0] + 0.0` Float.
+    fn infer_numeric_pair(
+        &mut self,
+        l: &StaticType,
+        r: &StaticType,
+    ) -> Result<(StaticType, StaticType), String> {
+        let lr = self.resolve_var(l);
+        let rr = self.resolve_var(r);
+        let num = |t: &StaticType| matches!(t, StaticType::Integer | StaticType::Float);
+        let pin = |me: &mut Self, t: &StaticType, to: &StaticType| -> Result<(), String> {
+            if let StaticType::Unknown(id) = t {
+                me.bind(*id, to.clone())?;
+            }
+            Ok(())
+        };
+        let unknown = |t: &StaticType| matches!(t, StaticType::Unknown(_));
+        match (&lr, &rr) {
+            (a, b) if num(a) && num(b) => Ok((lr.clone(), rr.clone())),
+            (a, b) if num(a) && unknown(b) => {
+                pin(self, b, a)?;
+                Ok((a.clone(), a.clone()))
+            }
+            (a, b) if num(b) && unknown(a) => {
+                pin(self, a, b)?;
+                Ok((b.clone(), b.clone()))
+            }
+            (a, b) if unknown(a) && unknown(b) => {
+                // Neither side concrete numeric: two boundary reads
+                // (`arg[0] + arg[1]`) or bare locals — the numeric
+                // default is Integer, exactly what an unconstrained
+                // boundary element already means.
+                pin(self, a, &StaticType::Integer)?;
+                pin(self, b, &StaticType::Integer)?;
+                Ok((StaticType::Integer, StaticType::Integer))
+            }
+            // A concrete non-numeric operand (Bool after a condition
+            // pinned the boundary) passes through untouched — the
+            // caller's match rejects it with its own message.
+            _ => Ok((lr, rr)),
+        }
+    }
+
+    /// Pin an unknown operand to its concrete scalar partner in an
+    /// equality — `arg[0] == "x"` makes String cells, `arg[0] == true`
+    /// Boolean. A Table partner pins nothing (cells are never tables;
+    /// the compatible check answers) and two unknowns stay open.
+    fn pin_scalar_pair(
+        &mut self,
+        l: &StaticType,
+        r: &StaticType,
+    ) -> Result<(), String> {
+        let lr = self.resolve_var(l);
+        let rr = self.resolve_var(r);
+        let scalar = |t: &StaticType| {
+            matches!(
+                t,
+                StaticType::Integer
+                    | StaticType::Float
+                    | StaticType::Boolean
+                    | StaticType::String
+            )
+        };
+        match (&lr, &rr) {
+            (a, StaticType::Unknown(id)) if scalar(a) => {
+                self.bind(*id, a.clone())?;
+            }
+            (StaticType::Unknown(id), b) if scalar(b) => {
+                self.bind(*id, b.clone())?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn resolve_through(substitutions: &BTreeMap<usize, StaticType>, ty: &StaticType) -> StaticType {

@@ -462,8 +462,10 @@ impl<'a> IrLowerer<'a> {
     pub fn lower_program(&mut self, stmts: &[Stmt]) -> IrProgram {
         // The C-ABI boundary: bind the @glm_exec parameter to the
         // first virtual register, so the script's `arg` identifier
-        // reads the host-passed table like any other SSA value —
-        // 8-byte integer cells, the host-side contract.
+        // reads the host-passed table like any other SSA value. The
+        // cell type is the one the script's own usage pinned (the
+        // checker's inference, defaulting to Integer) — the host-side
+        // contract.
         let args_reg = self.next_reg();
         self.emit(Instruction::BindArgs {
             target: Reg::new(args_reg),
@@ -472,7 +474,7 @@ impl<'a> IrLowerer<'a> {
             "arg".to_string(),
             Local {
                 reg: AnyReg::Ptr(Reg::new(args_reg)),
-                ty: StaticType::Table(Box::new(StaticType::Integer)),
+                ty: StaticType::Table(Box::new(self.shape.boundary_elem.clone())),
                 layout: LayoutVerdict::default(),
             },
         );
@@ -513,6 +515,8 @@ impl<'a> IrLowerer<'a> {
         }
         IrProgram {
             blocks: std::mem::take(&mut self.blocks),
+            boundary_elem: self.shape.boundary_elem.clone(),
+            entry: crate::ir::EntryKind::Lib,
         }
     }
 

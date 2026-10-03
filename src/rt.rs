@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use crate::trace::{
     TRACE_FAIL_DIV_ZERO, TRACE_FAIL_LEAK_DETECTED, TRACE_FAIL_NULL_ROW_STORE, TRACE_RT_ALLOC,
-    TRACE_RT_FREE, TRACE_RT_FREE_CHILD,
+    TRACE_RT_FREE, TRACE_RT_FREE_CHILD, TRACE_RT_STR_INTERN, TRACE_RT_STR_POOL_HIT,
 };
 
 #[repr(u8)]
@@ -727,6 +727,209 @@ pub unsafe extern "C" fn glm_str_len(val: *const u8) -> i64 {
         }
     }
     len as i64
+}
+
+// === The boundary string intern space ===
+// String cells cross the boundary as pointers, and string equality is
+// IDENTITY over the intern space — so a boundary word must hold the
+// same address the script's own literal holds. The module's distinct
+// literals are registered here at load (the backend's .init_array
+// registry), and a word matching none of them gets its own immortal
+// copy: one flat identity space, pool semantics extended across the
+// boundary. All of it rides the deep-free exemption — an interned
+// string owns no GlmTable.
+
+use std::sync::Mutex;
+
+static STR_POOL: Mutex<Option<HashMap<Vec<u8>, usize>>> = Mutex::new(None);
+
+fn str_pool() -> std::sync::MutexGuard<'static, Option<HashMap<Vec<u8>, usize>>> {
+    // Poisoned is still usable: the map is a cache, never a safety
+    // boundary — a torn map only costs an extra intern.
+    let mut guard = STR_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_none() {
+        *guard = Some(HashMap::new());
+    }
+    guard
+}
+
+/// The module's literal registry: `ptrs` names `n` NUL-terminated
+/// pool constants (the .init_array constructor passes the backend's
+/// strtab). Later registrations win nothing — first address per
+/// content sticks, and within one module every content is one literal.
+///
+/// # Safety
+/// `ptrs` readable for `n` pointers; each readable through its NUL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glm_str_register(ptrs: *const *const u8, n: usize) {
+    let mut pool = str_pool();
+    let Some(map) = pool.as_mut() else {
+        return;
+    };
+    for i in 0..n {
+        let p = unsafe { *ptrs.add(i) };
+        if p.is_null() {
+            continue;
+        }
+        let bytes = unsafe { cstr_bytes(p) };
+        map.entry(bytes.to_vec()).or_insert(p as usize);
+    }
+}
+
+/// The intern: the address for this content, whatever it takes — the
+/// registered literal's address on a match (a pool hit: the cell holds
+/// the literal's own address, identity equality with the script's
+/// strings, no allocation), else a freshly allocated immortal
+/// NUL-terminated copy cached for every later ask. One address per
+/// distinct content, for the whole process.
+///
+/// # Safety
+/// `s` readable for `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glm_str_intern(s: *const u8, len: usize) -> *const u8 {
+    let bytes = unsafe { std::slice::from_raw_parts(s, len) };
+    {
+        let pool = str_pool();
+        if let Some(&addr) = pool.as_ref().and_then(|m| m.get(bytes)) {
+            unsafe { glm_trace_set(TRACE_RT_STR_POOL_HIT) };
+            return addr as *const u8;
+        }
+    }
+    unsafe { glm_trace_set(TRACE_RT_STR_INTERN) };
+    let mut buf = Vec::with_capacity(len + 1);
+    buf.extend_from_slice(bytes);
+    buf.push(0);
+    let p = Box::into_raw(buf.into_boxed_slice()) as *const u8;
+    let mut pool = str_pool();
+    if let Some(map) = pool.as_mut() {
+        map.insert(bytes.to_vec(), p as usize);
+    }
+    p
+}
+
+/// # Safety
+/// `p` NUL-terminated and readable through the terminator.
+unsafe fn cstr_bytes(p: *const u8) -> &'static [u8] {
+    let mut len = 0usize;
+    unsafe {
+        while *p.add(len) != 0 {
+            len += 1;
+        }
+    }
+    unsafe { std::slice::from_raw_parts(p, len) }
+}
+
+// === The standalone host ===
+// The exe twin of the compiler's dev-loop host: the boundary element
+// type is pinned at COMPILE time (the checker's usage inference) and
+// embedded in @main as one of these constants, so the executable
+// carries its own arg contract — no compiler process, no dlopen. The
+// words cross at exec time, through the same glm_tbl_* calls and the
+// same intern pool (the module's literal registry already ran via
+// .init_array before main).
+pub const GLM_ARG_INT: i32 = 0;
+pub const GLM_ARG_FLOAT: i32 = 1;
+pub const GLM_ARG_BOOL: i32 = 2;
+pub const GLM_ARG_STRING: i32 = 3;
+
+fn arg_kind_words(kind: i32) -> &'static str {
+    match kind {
+        GLM_ARG_FLOAT => "numbers (64-bit floats)",
+        GLM_ARG_BOOL => "booleans ('true'/'false')",
+        GLM_ARG_STRING => "strings (any word)",
+        _ => "integers (64-bit)",
+    }
+}
+
+fn arg_kind_table(kind: i32) -> &'static str {
+    match kind {
+        GLM_ARG_FLOAT => "Table<Float>",
+        GLM_ARG_BOOL => "Table<Boolean>",
+        GLM_ARG_STRING => "Table<String>",
+        _ => "Table<Integer>",
+    }
+}
+
+/// Parse and store one boundary word per the pinned kind. The value's
+/// address is a local — glm_tbl_set copies the bytes immediately.
+///
+/// # Safety
+/// `t` live from glm_tbl_new; `w` any bytes.
+unsafe fn set_word(t: *mut GlmTable, i: i64, w: &[u8], kind: i32) -> Result<(), ()> {
+    match kind {
+        GLM_ARG_INT => {
+            let v: i64 = String::from_utf8_lossy(w).parse().map_err(|_| ())?;
+            unsafe { glm_tbl_set(t, i, (&v as *const i64).cast()) };
+        }
+        GLM_ARG_FLOAT => {
+            let v: f64 = String::from_utf8_lossy(w).parse().map_err(|_| ())?;
+            unsafe { glm_tbl_set(t, i, (&v as *const f64).cast()) };
+        }
+        GLM_ARG_BOOL => {
+            let v = match w {
+                b"true" => 1u8,
+                b"false" => 0u8,
+                _ => return Err(()),
+            };
+            unsafe { glm_tbl_set(t, i, (&v as *const u8).cast()) };
+        }
+        GLM_ARG_STRING => {
+            let p = unsafe { glm_str_intern(w.as_ptr(), w.len()) };
+            unsafe { glm_tbl_set(t, i, (&p as *const *const u8).cast()) };
+        }
+        _ => return Err(()),
+    }
+    Ok(())
+}
+
+/// The standalone entry's whole host role: parse the CLI words
+/// (argv[1..]) per the compile-time pinned element kind, build the
+/// boundary table, call the module's @glm_exec, and free both tables —
+/// the identity check freeing `return arg` exactly once. A word that
+/// fails to parse dies with the same message the dev-loop host prints,
+/// exit code 1.
+///
+/// # Safety
+/// `argv` readable for `argc` NUL-terminated pointers (or null with
+/// `argc` <= 0); `exec` the module's @glm_exec.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glm_exec_main(
+    argc: i32,
+    argv: *const *const u8,
+    kind: i32,
+    exec: unsafe extern "C" fn(*mut GlmTable) -> *mut GlmTable,
+) -> i32 {
+    let mut words: Vec<&[u8]> = Vec::new();
+    if !argv.is_null() {
+        for i in 1..(argc.max(0) as usize) {
+            let p = unsafe { *argv.add(i) };
+            if !p.is_null() {
+                words.push(unsafe { cstr_bytes(p) });
+            }
+        }
+    }
+    let esize = if kind == GLM_ARG_BOOL { 1 } else { 8 };
+    let args = unsafe { glm_tbl_new(esize, 0) };
+    for (i, w) in words.iter().enumerate() {
+        if unsafe { set_word(args, i as i64, w, kind) }.is_err() {
+            eprintln!(
+                "glm error: boundary args must be {}, got '{}' — the arg table is {}",
+                arg_kind_words(kind),
+                String::from_utf8_lossy(w),
+                arg_kind_table(kind),
+            );
+            unsafe { glm_tbl_free(args) };
+            return 1;
+        }
+    }
+    let result = exec(args);
+    unsafe {
+        if result != args {
+            glm_tbl_free(args);
+        }
+        glm_tbl_free(result);
+    }
+    0
 }
 
 #[unsafe(no_mangle)]

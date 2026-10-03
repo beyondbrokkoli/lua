@@ -1060,4 +1060,28 @@ impl BasicBlock {
 #[derive(Debug, Clone)]
 pub struct IrProgram {
     pub blocks: Vec<BasicBlock>,
+    /// The boundary `arg` table's element type as the checker pinned
+    /// it from usage — Integer unless the script demanded Float, Bool,
+    /// or String. The backend reads it for the string registry (String
+    /// cells intern through the module's pool), the host for parsing
+    /// the CLI words.
+    pub boundary_elem: StaticType,
+    /// The module's entry point: the shared library exporting
+    /// @glm_exec (the dlopen world), or the executable whose @main
+    /// calls @glm_exec(null) and frees what returns.
+    pub entry: EntryKind,
+}
+
+/// How the linked artifact enters the program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EntryKind {
+    /// A shared library: ptr @glm_exec(ptr %args) is the one export,
+    /// a host dlopens and calls it.
+    #[default]
+    Lib,
+    /// An executable. With `args`, @main(argc, argv) delegates to the
+    /// runtime's glm_exec_main with the compile-time pinned element
+    /// kind — the executable carries its own boundary host. Without,
+    /// @main calls @glm_exec(null): the script never names `arg`.
+    Exe { args: bool },
 }

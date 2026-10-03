@@ -56,8 +56,9 @@ function parse_pins(content)
             table.insert(pins.unknown, prefix)
         end
     end
-    -- One ARGS line per case, passed through verbatim (the host enforces
-    -- integer cells at the boundary).
+    -- One ARGS line per case, passed through verbatim (the host — or
+    -- the executable's own host — parses the words against the
+    -- usage-pinned cell type at the boundary).
     pins.args = content:match("%-%-%s*ARGS:%s*([^\r\n]+)")
     return pins
 end
@@ -112,9 +113,32 @@ function run_case(src, args, with_backtrace)
 end
 
 -- True iff the LAST invocation compiled: the success note is the one
--- marker printed after clang links and before the boundary run.
+-- marker printed after clang links and before the boundary run (the
+-- .so and exe spellings both start with 'Success!').
 function compile_succeeded()
     return read_file(OUT):find("Success! Shared library written", 1, true) ~= nil
+end
+
+-- The --exe twin: the success note names the executable instead.
+function compile_succeeded_exe()
+    return read_file(OUT):find("Success! executable written", 1, true) ~= nil
+end
+
+-- Compile one case standalone (no boundary words). True iff the exe
+-- linked; a refusal (the script names `arg`, or words were passed) is
+-- reported through the captured streams like any other failure.
+function run_case_exe(src)
+    local res = os.execute(string.format(
+        "timeout 120 %s --exe '%s' > %s 2> %s", BIN, src, OUT, ERR))
+    return res == true or res == 0
+end
+
+-- Run the linked ./glm_out once with the case's boundary words,
+-- capturing both streams.
+function run_exe_with(argstr)
+    local res = os.execute(string.format(
+        "timeout 120 ./glm_out%s > %s 2> %s", argstr, OUT, ERR))
+    return res == true or res == 0
 end
 
 -- The script's own stdout: OUT minus the success note (the boundary
@@ -122,7 +146,8 @@ end
 function script_stdout()
     local lines = {}
     for line in read_file(OUT):gmatch("[^\r\n]+") do
-        if not line:find("Success! Shared library written", 1, true) then
+        if not line:find("Success! Shared library written", 1, true)
+            and not line:find("Success! executable written", 1, true) then
             table.insert(lines, line)
         end
     end

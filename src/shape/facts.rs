@@ -86,6 +86,14 @@ impl FnDef {
 pub struct ShapeFacts {
     pub sites: BTreeMap<*const Expr, usize>,
     pub elems: Vec<StaticType>,
+    /// The boundary `arg` table's element type as the checker resolved
+    /// it from usage (Integer until something pins it: an arithmetic
+    /// operand, a comparison, a condition, a store or constructor
+    /// element, a print — Float/Bool/String otherwise). The lowerer
+    /// seeds the `arg` binding's type from it and the host parses the
+    /// CLI words against it, so both sides of the boundary speak the
+    /// one cell type the script's own code demanded.
+    pub boundary_elem: StaticType,
     #[allow(dead_code)]
     pub layouts: Vec<LayoutVerdict>,
     pub free_sites: BTreeSet<*const Stmt>,

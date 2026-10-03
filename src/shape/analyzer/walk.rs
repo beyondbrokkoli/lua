@@ -257,6 +257,21 @@ impl Analyzer {
                 let (vt, vsites, vlineage) = self.infer_expr(rec, value)?;
                 self.check_uses(rec, value)?;
 
+                // A Pending stored value at the root scope is a
+                // boundary read (`t[0] = arg[0]`) — flag every target
+                // site boundary-fed so a needed+Pending tail defers to
+                // the checker's inference (the ctor-entry twin).
+                if matches!(vt, Pending)
+                    && vsites.iter().all(|s| is_root(s) || is_ghost(s))
+                    && self.walk.scopes.len() == 1
+                {
+                    for &s in &obj_sites {
+                        if !is_root(&s) && !is_ghost(&s) {
+                            self.reads.boundary_fed.insert(s);
+                        }
+                    }
+                }
+
                 // The borrow-escape flip: a row read CAN be stored — it
                 // moves into the cell, its identity (the birth-site
                 // projection) recorded so the origin's frees spare the

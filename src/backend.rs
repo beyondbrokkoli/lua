@@ -1,7 +1,7 @@
 use crate::ast::StaticType;
 use crate::ir::{
-    BlockId, Bool, CellGet, CellSet, CellSetFast, CmpRegs, Instruction, Int, IrProgram, MoveRegs,
-    NumRegs, NumRegsRhs, PhiRegs, Ptr, Reg, Repr, Terminator, UnaryNum,
+    BlockId, Bool, CellGet, CellSet, CellSetFast, CmpRegs, EntryKind, Instruction, Int, IrProgram,
+    MoveRegs, NumRegs, NumRegsRhs, PhiRegs, Ptr, Reg, Repr, Terminator, UnaryNum,
 };
 use crate::shape::LayoutVerdict;
 use glm_rt::trace;
@@ -353,6 +353,78 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     out.push_str(&code);
     out.push_str("}\n");
 
+    // The standalone entry. The argless form: @main calls the
+    // boundary with no table and frees what returns — the whole
+    // program in an executable, no host, no dlopen. The args form:
+    // @main hands argc/argv to the runtime's glm_exec_main with the
+    // compile-time pinned element kind, so the executable carries its
+    // own boundary host — the words cross at exec time, parsed against
+    // the same usage-inferred cell type the dev-loop host uses.
+    let mut needs_exec_main_decl = false;
+    if let EntryKind::Exe { args } = program.entry {
+        if args {
+            let kind = match program.boundary_elem {
+                StaticType::Float => glm_rt::rt::GLM_ARG_FLOAT,
+                StaticType::Boolean => glm_rt::rt::GLM_ARG_BOOL,
+                StaticType::String => glm_rt::rt::GLM_ARG_STRING,
+                _ => glm_rt::rt::GLM_ARG_INT,
+            };
+            out.push_str(&format!(
+                "\ndefine i32 @main(i32 %argc, ptr %argv) {{\n\
+                 entry:\n\
+                   %rc = call i32 @glm_exec_main(i32 %argc, ptr %argv, i32 {kind}, ptr @glm_exec)\n\
+                   ret i32 %rc\n\
+                 }}\n"
+            ));
+            needs_exec_main_decl = true;
+        } else {
+            out.push_str(
+                "\ndefine i32 @main() {\n\
+                 entry:\n\
+                   %r = call ptr @glm_exec(ptr null)\n\
+                   call void @glm_tbl_free(ptr %r)\n\
+                   ret i32 0\n\
+                 }\n",
+            );
+            // @main's own free runs even when the script frees nothing,
+            // so the declaration cannot ride the script's needs flag.
+            needs_tbl_free_decl = true;
+        }
+    }
+
+    // The string registry, emitted only for String boundary cells: the
+    // module's distinct literals collected into one pointer array,
+    // registered with the runtime at load (an .init_array constructor
+    // — runs at dlopen for the .so, at program start for the exe), so
+    // the host's boundary words intern to the same pointer identity
+    // the script's own literals hold. A miss allocates the runtime's
+    // own immortal copy (glm_str_intern), keeping the pool semantics
+    // one flat identity space across the boundary.
+    let mut registry = String::new();
+    if matches!(program.boundary_elem, StaticType::String) && !str_pool.is_empty() {
+        trace::compiler_trace_signal(trace::TRACE_STRTAB_EMIT);
+        let ptrs: Vec<String> = str_pool
+            .values()
+            .map(|g| format!("ptr {g}"))
+            .collect();
+        registry.push_str(&format!(
+            "@.glm_strtab = global [{} x ptr] [{}]\n",
+            ptrs.len(),
+            ptrs.join(", ")
+        ));
+        registry.push_str(&format!(
+            "\ndefine internal void @.glm_strreg() {{\n\
+             entry:\n\
+               call void @glm_str_register(ptr @.glm_strtab, i64 {})\n\
+               ret void\n\
+             }}\n\
+             @llvm.global_ctors = appending global \
+             [1 x {{ i32, ptr, ptr }}] \
+             [{{ i32, ptr, ptr }} {{ i32 65535, ptr @.glm_strreg, ptr null }}]\n",
+            ptrs.len()
+        ));
+    }
+
     let mut head = String::new();
     if needs_floor_decl {
         head.push_str("declare double @llvm.floor.f64(double)\n");
@@ -387,6 +459,14 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     if needs_div_guard {
         head.push_str("declare void @glm_div_zero_guard(i64)\n");
     }
+    if !registry.is_empty() {
+        head.push_str("declare void @glm_str_register(ptr, i64)\n");
+    }
+    if needs_exec_main_decl {
+        head.push_str(
+            "declare i32 @glm_exec_main(i32, ptr, i32, ptr)\n",
+        );
+    }
 
     let md = if needs_hdr_md {
         "\n!0 = !{!1}\n\
@@ -396,7 +476,7 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     } else {
         String::new()
     };
-    Ok(format!("{}{}{}{}", globals, head, out, md))
+    Ok(format!("{}{}{}{}{}", globals, registry, head, out, md))
 }
 
 fn emit_move(m: &MoveRegs, code: &mut String) {

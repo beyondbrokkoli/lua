@@ -217,6 +217,18 @@ impl Analyzer {
                         self.check_key_threshold(rec, &Expr::Integer(*c), &BTreeSet::from([id]))?;
                     }
                     let (t, esites, elineage) = self.infer_expr(rec, e)?;
+                    // A Pending entry value at the root scope can only
+                    // be a boundary read (`arg[i]`) or a chained read
+                    // of a site that errors on its own — flag the
+                    // ctor site boundary-fed so a needed+Pending tail
+                    // defers it to the checker's inference instead of
+                    // rejecting (the fn-param twin).
+                    if matches!(t, Pending)
+                        && esites.iter().all(|s| is_root(s) || is_ghost(s))
+                        && self.walk.scopes.len() == 1
+                    {
+                        self.reads.boundary_fed.insert(id);
+                    }
                     if matches!(t, Tbl(_)) {
                         self.reads.tbl_value_stores.insert(id);
                         if let Some(&child_site) = self.lattice.sites.get(&(e as *const Expr)) {

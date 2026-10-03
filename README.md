@@ -14,31 +14,70 @@ and memory composting.
 cargo build --release
 
 # Compile and run a program -> ./libglm_out.so
-./target/release/glm path/to/program.lua [int args...]
+./target/release/glm path/to/program.lua [args...]
+
+# Compile a standalone executable instead -> ./glm_out
+./target/release/glm --exe path/to/program.lua
+./glm_out [args...]
 ```
 
 The compiler writes into the current working directory: `out.ll` (the LLVM
-IR), `libglm_out.so` (the linked module), and the trace plate below. It then
-acts as the reference host: it `dlopen`s the module, resolves `glm_exec`,
-builds the `arg` table from the extra integer CLI words, calls into the
-script, and frees args and the returned table.
+IR), the linked module (`libglm_out.so`, or `glm_out` under `--exe`), and
+the trace plate below. In the default mode it then acts as the reference
+host: it `dlopen`s the module, resolves `glm_exec`, builds the `arg`
+table from the extra CLI words, calls into the script, and frees args
+and the returned table. Under `--exe` there is no host at all — the
+executable carries its own: `@main(argc, argv)` delegates to the
+runtime's `glm_exec_main` with the compile-time pinned element kind,
+which parses the words, builds the table, calls `glm_exec`, and frees
+both (the `return arg` identity check included).
 
 ```c
 ptr glm_exec(ptr args); /* args: GlmTable*, returns GlmTable* or null */
 ```
 
-Inside the script, `arg` names the table the host passed (8-byte integer
-cells, `Table<Integer>`); a top-level `return` hands a table (or nothing —
-null) back to the host and ends execution. Only tables cross the boundary;
-scalars and strings stay behind it. `arg` is only materialized when the
-script names it, not using `arg` means that `sys_alloc_count()` must be 0.
-`arg` is pinned: the host owns the header, so it cannot be moved into
-another binding or table (`local t = arg`, `t[1] = arg` are compile errors,
-as is passing `arg` to a function that moves its parameter or returns it
+Inside the script, `arg` names the table the host passed; a top-level
+`return` hands a table (or nothing — null) back to the host and ends
+execution. Only tables cross the boundary; scalars and strings stay
+behind it. `arg` is only materialized when the script names it, not
+using `arg` means that `sys_alloc_count()` must be 0. `arg` is pinned:
+the host owns the header, so it cannot be moved into another binding
+or table (`local t = arg`, `t[1] = arg` are compile errors, as is
+passing `arg` to a function that moves its parameter or returns it
 into a move) — read its cells (`arg[i]`) instead; `return arg` is fine.
 
+### Boundary argument types
+
+The `arg` table's cell type is pinned by usage — the first position
+that demands a type unifies the element, so the host (or the
+executable's own host) parses the CLI words against exactly what the
+script's code asked for:
+
+| script usage                          | boundary cells     | accepted words     |
+| ------------------------------------- | ------------------ | ------------------ |
+| `arg[0] + 1`, `arg[0] < 5`, `-arg[0]` | `Table<Integer>`   | 64-bit integers    |
+| `arg[0] + 0.5`, `arg[0] / 2`          | `Table<Float>`     | 64-bit floats      |
+| `if arg[0] then`, `not arg[0]`        | `Table<Boolean>`   | `true` / `false`   |
+| `arg[0] == "x"`                       | `Table<String>`    | any word           |
+| nothing but `arg[i]` copies           | `Table<Integer>`   | 64-bit integers    |
+
+One boundary, one cell type — a Float demand after an Int demand is a
+compile error, exactly like inline calls are monomorphic. Cells copied
+into constructors and stores (`local u = {arg[0], 2}`) unify the same
+way, and a boundary read passed into an inline function pins through
+the parameter. A `Table` element cannot be inferred: boundary cells
+hold scalars.
+
+String words intern through the runtime's pool: the module's distinct
+literals are registered at load (the backend emits a string registry
+run from an `.init_array` constructor), and a word matching none of
+them gets its own immortal copy — so `arg[0] == "literal"` is identity
+over the intern space, the same contract as between script literals.
+
 ```sh
-./target/release/glm example.lua 4 2
+./target/release/glm example.lua 4 2   # the dev-loop host
+./target/release/glm --exe app.lua
+./glm_out 4 2                          # the executable's own host
 ```
 
 ## Tests
@@ -60,9 +99,17 @@ and the directory is the listing.
 -- EXPECT_BUILD_FAIL: <text> compile must fail; stderr contains <text>
 -- EXPECT_PANIC: <text>      build passes, the script dies with <text>
                              on stderr
--- ARGS: <ints...>           integer boundary arguments (become the
-                             script's `arg` table cells)
+-- ARGS: <words...>          boundary arguments, passed through
+                             verbatim and parsed against the case's
+                             usage-pinned cell type (integers, floats,
+                             true/false, or words for String tables)
 ```
+
+The bench's EXE section re-links every case with `--exe` and runs
+`./glm_out` with the same ARGS words — the standalone twin of the
+whole corpus, so the two hosts (the dev-loop dlopen host and the
+executable's embedded `glm_exec_main`) are pinned to identical
+behavior.
 
 ### Inline Functions
 

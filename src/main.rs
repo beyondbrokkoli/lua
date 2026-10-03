@@ -11,7 +11,7 @@ mod parser;
 mod shape;
 mod type_checker;
 
-use ast::Stmt;
+use ast::{StaticType, Stmt};
 
 // The boundary type, shared by construction: the same #[repr(C)] struct
 // the .so's copy of glm_rt uses, so host and callee speak one ABI.
@@ -27,6 +27,19 @@ type GlmTblNew = unsafe extern "C" fn(esize: usize, flags: u8) -> *mut GlmTable;
 type GlmTblSet = unsafe extern "C" fn(t: *mut GlmTable, index: i64, val: *const u8);
 type GlmTblGet = unsafe extern "C" fn(t: *mut GlmTable, index: i64, dst: *mut u8, esize: usize);
 type GlmTblFree = unsafe extern "C" fn(t: *mut GlmTable);
+// The string intern, resolved from the .so like every other boundary
+// symbol: the host's words must hold the same addresses the module's
+// literals hold, and the .so's own runtime owns that identity space.
+type GlmStrIntern = unsafe extern "C" fn(s: *const u8, len: usize) -> *const u8;
+
+/// One boundary word, parsed against the cell type the script's own
+/// usage pinned: the host-side half of the boundary contract.
+enum HostArg {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(Vec<u8>),
+}
 
 const RTLD_NOW: i32 = 0x2;
 const RTLD_LOCAL: i32 = 0x1;
@@ -102,7 +115,7 @@ fn references_arg(stmts: &[Stmt]) -> bool {
 /// Load the compiled module, hand it the boundary args table, and take
 /// ownership of what comes back: the exact invocation path a C host,
 /// LuaJIT FFI, or any Rust runner would use.
-unsafe fn run_boundary(host_ints: &[i64], pass_args: bool) -> Result<(), String> {
+unsafe fn run_boundary(host_args: &[HostArg], pass_args: bool) -> Result<(), String> {
     let path = CString::new("./libglm_out.so").unwrap();
     let dylib = unsafe { dlopen(path.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
     if dylib.is_null() {
@@ -114,15 +127,37 @@ unsafe fn run_boundary(host_ints: &[i64], pass_args: bool) -> Result<(), String>
     let glm_tbl_set: GlmTblSet = unsafe { resolve_symbol(dylib, b"glm_tbl_set\0")? };
     let glm_tbl_get: GlmTblGet = unsafe { resolve_symbol(dylib, b"glm_tbl_get\0")? };
     let glm_tbl_free: GlmTblFree = unsafe { resolve_symbol(dylib, b"glm_tbl_free\0")? };
+    let glm_str_intern: GlmStrIntern = unsafe { resolve_symbol(dylib, b"glm_str_intern\0")? };
 
     // Build the arguments using the exact same C-ABI memory the script
-    // reads as its `arg` table (8-byte integer cells) — or pass null
-    // when the script never names `arg`.
+    // reads as its `arg` table — the cell type its own usage pinned
+    // (the checker's inference), or null when the script never names
+    // `arg`. The dlopen above already ran the module's .init_array
+    // string registry, so string words intern onto the module's own
+    // literal addresses.
     let mut args = std::ptr::null_mut::<GlmTable>();
     if pass_args {
-        args = unsafe { glm_tbl_new(8, 0) };
-        for (i, v) in host_ints.iter().enumerate() {
-            unsafe { glm_tbl_set(args, i as i64, (v as *const i64).cast::<u8>()) };
+        let esize = match host_args.first() {
+            Some(HostArg::Bool(_)) => 1,
+            _ => 8,
+        };
+        args = unsafe { glm_tbl_new(esize, 0) };
+        for (i, v) in host_args.iter().enumerate() {
+            match v {
+                HostArg::Int(x) => unsafe {
+                    glm_tbl_set(args, i as i64, (x as *const i64).cast::<u8>())
+                },
+                HostArg::Float(x) => unsafe {
+                    glm_tbl_set(args, i as i64, (x as *const f64).cast::<u8>())
+                },
+                HostArg::Bool(b) => unsafe {
+                    glm_tbl_set(args, i as i64, (&u8::from(*b) as *const u8).cast::<u8>())
+                },
+                HostArg::Str(bytes) => unsafe {
+                    let p = glm_str_intern(bytes.as_ptr(), bytes.len());
+                    glm_tbl_set(args, i as i64, (&p as *const *const u8).cast::<u8>())
+                },
+            }
         }
     }
 
@@ -225,10 +260,16 @@ fn main() {
     }));
 
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        panic!("Usage: glm <file.lua> [int args...]");
+    // The standalone face: `glm --exe <file.lua>` links a native
+    // executable instead of the .so and never enters the boundary —
+    // the program runs as its own process with no host, so it carries
+    // no boundary table.
+    let standalone = args.len() >= 2 && args[1] == "--exe";
+    let offset = usize::from(standalone);
+    if args.len() < 2 + offset {
+        panic!("Usage: glm [--exe] <file.lua> [args...]");
     }
-    let source_path = &args[1];
+    let source_path = &args[1 + offset];
     let source = std::fs::read_to_string(source_path).expect("Failed to read source");
 
     let mut tokens = Vec::new();
@@ -299,7 +340,7 @@ fn main() {
     }
 
     let mut ir_lowerer = lowerer::IrLowerer::new(&shape);
-    let ir_program = ir_lowerer.lower_program(&ast);
+    let mut ir_program = ir_lowerer.lower_program(&ast);
 
     if !ir_lowerer.diagnostics.is_empty() {
         for d in &ir_lowerer.diagnostics {
@@ -308,6 +349,18 @@ fn main() {
         glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_BUILD_FAIL);
         eprintln!("GLM_TRACE: slot 1 — build failed");
         std::process::exit(1);
+    }
+
+    // The standalone entry: an executable enters through @main. A
+    // script naming `arg` gets the args form — @main(argc, argv)
+    // delegating to the runtime's glm_exec_main with the pinned
+    // element kind, the exe twin of the dev-loop host. A script that
+    // never names `arg` gets the argless form (the boundary table
+    // would sit live for a script that cannot touch it).
+    if standalone {
+        ir_program.entry = ir::EntryKind::Exe {
+            args: references_arg(&ast),
+        };
     }
 
     let llvm_ir = match backend::generate_llvm_ir(&ir_program) {
@@ -338,49 +391,112 @@ fn main() {
     // linked as a shared library whose one export is @glm_exec.
     // out.ll carries no triple; the runtime staticlib's embedded triple
     // sets it at link, which clang would flag on every compile.
-    let status = std::process::Command::new("clang")
-        .arg("-O3")
-        .arg("-Wno-override-module")
-        .arg("-shared")
-        .arg("-fPIC")
+    let (link_output, link_kind) = if standalone {
+        ("glm_out", "executable")
+    } else {
+        ("libglm_out.so", "Shared library")
+    };
+    let mut link = std::process::Command::new("clang");
+    link.arg("-O3").arg("-Wno-override-module");
+    if !standalone {
+        link.arg("-shared").arg("-fPIC");
+    }
+    let status = link
         .arg("out.ll")
         .arg(&runtime)
         .arg("-lpthread")
         .arg("-ldl")
         .arg("-lm")
         .arg("-o")
-        .arg("libglm_out.so")
+        .arg(link_output)
         .status()
         .expect("Failed to execute clang");
 
     if !status.success() {
-        panic!("Clang failed to assemble and link the shared library.");
+        panic!("Clang failed to assemble and link the {link_kind}.");
     }
-    println!("Success! Shared library written to ./libglm_out.so");
+    println!("Success! {link_kind} written to ./{link_output}");
     glm_rt::trace::compiler_trace_signal(glm_rt::trace::TRACE_COMPILED);
     eprintln!("GLM_TRACE: slot 0 — compiled ok");
 
+    // The standalone world ends at the link: no host, no dlopen, no
+    // boundary table — the executable IS the program.
+    if standalone {
+        return;
+    }
+
     // Host-side invocation: the extra CLI words cross the boundary as
-    // the `arg` table's integer cells — only built when the script
-    // actually names `arg`.
+    // the `arg` table's cells — only built when the script actually
+    // names `arg`, parsed against the cell type the script's own usage
+    // pinned (the checker's inference; Integer before any usage
+    // demanded more).
     let pass_args = references_arg(&ast);
-    let mut host_ints = Vec::with_capacity(args.len() - 2);
+    let mut host_args = Vec::with_capacity(args.len() - 2);
     if pass_args {
+        let elem = &ir_program.boundary_elem;
         for raw in &args[2..] {
-            match raw.parse::<i64>() {
-                Ok(v) => host_ints.push(v),
-                Err(_) => {
+            let word = match elem {
+                StaticType::Integer => raw
+                    .parse::<i64>()
+                    .map(HostArg::Int)
+                    .map_err(|_| raw.to_string()),
+                StaticType::Float => raw
+                    .parse::<f64>()
+                    .map(HostArg::Float)
+                    .map_err(|_| raw.to_string()),
+                StaticType::Boolean => parse_bool(raw)
+                    .map(HostArg::Bool)
+                    .ok_or_else(|| raw.clone()),
+                StaticType::String => Ok(HostArg::Str(raw.as_bytes().to_vec())),
+                _ => Err(raw.clone()),
+            };
+            match word {
+                Ok(v) => host_args.push(v),
+                Err(bad) => {
                     eprintln!(
-                        "glm host error: boundary args must be integers (64-bit), got '{raw}' — \
-                         the arg table is Table<Integer>"
+                        "glm host error: boundary args must be {}, got '{bad}' — \
+                         the arg table is {}",
+                        elem_words(elem),
+                        elem_table(elem),
                     );
                     std::process::exit(1);
                 }
             }
         }
     }
-    if let Err(e) = unsafe { run_boundary(&host_ints, pass_args) } {
+    if let Err(e) = unsafe { run_boundary(&host_args, pass_args) } {
         eprintln!("glm host error: {e}");
         std::process::exit(1);
+    }
+}
+
+/// A Boolean word: true/false, case-sensitive — the two spellings the
+/// checker's Boolean cells accept.
+fn parse_bool(raw: &str) -> Option<bool> {
+    match raw {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// The word vocabulary a cell type accepts, for the host's error text.
+fn elem_words(elem: &StaticType) -> &'static str {
+    match elem {
+        StaticType::Integer => "integers (64-bit)",
+        StaticType::Float => "numbers (64-bit floats)",
+        StaticType::Boolean => "booleans ('true'/'false')",
+        StaticType::String => "strings (any word)",
+        _ => "integers (64-bit)",
+    }
+}
+
+fn elem_table(elem: &StaticType) -> String {
+    match elem {
+        StaticType::Integer => "Table<Integer>".to_string(),
+        StaticType::Float => "Table<Float>".to_string(),
+        StaticType::Boolean => "Table<Boolean>".to_string(),
+        StaticType::String => "Table<String>".to_string(),
+        _ => "Table<Integer>".to_string(),
     }
 }

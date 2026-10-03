@@ -9,7 +9,11 @@ Usage: lua run.lua [run [substr]...] | probe <file.lua>
   (no args)   run the whole corpus
   run         run the whole corpus
   run SUB...  run only cases whose name contains any SUB
-  probe FILE  run one file, archive out.ll + plates to target/probe/]])
+  probe FILE  run one file, archive out.ll + plates to target/probe/
+
+The bench always includes the EXE section: every case is re-linked
+with --exe and run as ./glm_out with its ARGS words — the executable
+carries its own boundary host.]])
 end
 
 local ARGS = {...}
@@ -264,6 +268,68 @@ for _, name in ipairs(corpus.panic) do
     end
 end
 
+-- exe: the standalone twin of every compiled case — the same corpus
+-- through `glm --exe`, then ./glm_out itself with the case's ARGS
+-- words (the executable carries its own boundary host: the pinned
+-- element kind is embedded in @main, the runtime parses the words at
+-- exec time). Positive cases must run clean and match their EXPECT
+-- pins; panic cases must die the same scripted death inside the
+-- executable.
+print("\n== EXE (standalone twin: --exe compile + ./glm_out) ==")
+local exe_passed = 0
+do
+    local function exe_twin(name, must_die)
+        if not run_case_exe(CASES_DIR .. "/" .. name) then
+            report_fail("exe", name, "standalone compile failed: " .. first_error(ERR))
+            return
+        end
+        if not compile_succeeded_exe() then
+            report_fail("exe", name, "standalone compile failed: " .. first_error(ERR))
+            return
+        end
+        local pins = corpus.pins[name]
+        local argstr = pins.args and (" " .. pins.args) or ""
+        local ok = run_exe_with(argstr)
+        if must_die then
+            if ok then
+                report_fail("exe", name, "expected the scripted death inside the executable, it ran clean")
+            else
+                local err = read_file(ERR)
+                local bad
+                for _, msg in ipairs(pins.panic) do
+                    if not err:find(msg, 1, true) then bad = "missing expected stderr: " .. msg break end
+                end
+                if not bad and #pins.expect > 0 then
+                    bad = expect_mismatch(script_stdout(), pins.expect)
+                end
+                if bad then
+                    report_fail("exe", name, bad)
+                else
+                    exe_passed = exe_passed + 1
+                    report_pass(name .. " [exe]", "[" .. (err:match("([^\r\n]+)") or "died") .. "]")
+                end
+            end
+        else
+            if not ok then
+                report_fail("exe", name, "executable exited nonzero: " .. first_error(ERR))
+            else
+                local bad
+                if #pins.expect > 0 then
+                    bad = expect_mismatch(script_stdout(), pins.expect)
+                end
+                if bad then
+                    report_fail("exe", name, "EXPECT mismatch (exe) — " .. bad)
+                else
+                    exe_passed = exe_passed + 1
+                    report_pass(name .. " [exe]")
+                end
+            end
+        end
+    end
+    for _, name in ipairs(corpus.positive) do exe_twin(name, false) end
+    for _, name in ipairs(corpus.panic) do exe_twin(name, true) end
+end
+
 -- lock wrap (orphan scan is whole-corpus; a filtered run sees strays
 -- everywhere and would cry wolf)
 print("\n== LOCK (byte-identity vs " .. LOCK_DIR .. "/) ==")
@@ -287,6 +353,9 @@ print("\n== RESULT ==")
 print(string.format("  positive : %d/%d", pos_passed, #corpus.positive))
 print(string.format("  negative : %d/%d", neg_passed, #corpus.negative))
 print(string.format("  panic    : %d/%d", pan_passed, #corpus.panic))
+if #filters == 0 then
+    print(string.format("  exe      : %d twin(s) clean", exe_passed))
+end
 if #notices > 0 then print(c(YELLOW, string.format("  notices  : %d", #notices))) end
 if #failed > 0 then
     print(c(RED, string.format("  FAILURES : %d", #failed)))
