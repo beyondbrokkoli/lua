@@ -1,6 +1,6 @@
 use crate::ast::StaticType;
 use crate::ir::{
-    BlockId, Bool, CellGet, CellSet, CellSetFast, CmpRegs, EntryKind, Instruction, Int, IrProgram,
+    BlockId, Bool, CellGet, CellSet, CellSetFast, CmpRegs, EntryKind, Int, Instruction, IrProgram,
     MoveRegs, NumRegs, NumRegsRhs, PhiRegs, Ptr, Reg, Repr, Terminator, UnaryNum,
 };
 use crate::shape::LayoutVerdict;
@@ -11,6 +11,7 @@ fn elem_size(ty: &StaticType) -> u32 {
     match ty {
         StaticType::Boolean => 1,
         StaticType::Unknown(_) => 1,
+        StaticType::Any => 16,
         _ => 8,
     }
 }
@@ -54,6 +55,15 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     let mut needs_tbl_set_decl = false;
     let mut needs_str_len_decl = false;
     let mut needs_sys_alloc_count_decl = false;
+    let mut needs_any_print_decl = false;
+    let mut needs_any_eq_decl = false;
+    // Whether the module's own code references ANY runtime symbol —
+    // a module that references none (a bare `return arg` passthrough,
+    // a pure arithmetic script) would pull no member out of the
+    // runtime archive, and the dev-loop host's eager dlsym of the
+    // boundary surface (glm_tbl_new and friends) would fail against
+    // the thin .so. The anchor below closes that gap.
+    let mut has_print = false;
     let mut needs_hdr_md = false;
     let mut ts = 0usize;
     // The keep-array scratch counter: one entry alloca per multi-keep
@@ -105,6 +115,9 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                     target.id,
                     if *val { 1 } else { 0 }
                 )),
+                Instruction::LoadAnyZero { target } => {
+                    code.push_str(&format!("  %v{} = add i128 0, 0\n", target.id))
+                }
                 Instruction::LoadString { target, val } => {
                     let g = match str_pool.get(val.as_str()) {
                         Some(name) => {
@@ -273,10 +286,18 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                 }
                 Instruction::Mod(n) => mod_regs(n, &mut code, &mut needs_div_guard),
                 Instruction::Neg(u) => neg_regs(u, &mut code),
-                Instruction::Less(c) => cmp_regs(c, "slt", "olt", &mut code),
-                Instruction::Leq(c) => cmp_regs(c, "sle", "ole", &mut code),
-                Instruction::Geq(c) => cmp_regs(c, "sge", "oge", &mut code),
-                Instruction::Eq(c) => cmp_regs(c, "eq", "oeq", &mut code),
+                Instruction::Less(c) => {
+                    cmp_regs(c, "slt", "olt", &mut code, &mut needs_any_eq_decl)
+                }
+                Instruction::Leq(c) => {
+                    cmp_regs(c, "sle", "ole", &mut code, &mut needs_any_eq_decl)
+                }
+                Instruction::Geq(c) => {
+                    cmp_regs(c, "sge", "oge", &mut code, &mut needs_any_eq_decl)
+                }
+                Instruction::Eq(c) => {
+                    cmp_regs(c, "eq", "oeq", &mut code, &mut needs_any_eq_decl)
+                }
                 Instruction::Not { target, source } => {
                     code.push_str(&format!("  %v{} = xor i1 %v{}, 1\n", target.id, source.id));
                 }
@@ -292,7 +313,11 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                 Instruction::Phi(PhiRegs::Ptr { target, args }) => {
                     emit_phi(target, args, &tail, &mut code)
                 }
+                Instruction::Phi(PhiRegs::Any { target, args }) => {
+                    emit_phi(target, args, &tail, &mut code)
+                }
                 Instruction::Print { operands } => {
+                    has_print = true;
                     for (i, (r, ty)) in operands.iter().enumerate() {
                         if i > 0 {
                             code.push_str("  call void @glm_print_sep()\n");
@@ -311,6 +336,18 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                             }
                             StaticType::String => code
                                 .push_str(&format!("  call void @glm_print_string(ptr %v{})\n", r)),
+                            // The boundary's dynamic cell: the runtime
+                            // switches on the tag the host's word chose
+                            // and prints with the matching scalar
+                            // printer — the one dispatch an Any value
+                            // ever needs.
+                            StaticType::Any => {
+                                needs_any_print_decl = true;
+                                code.push_str(&format!(
+                                    "  call void @glm_any_print(i128 %v{})\n",
+                                    r
+                                ));
+                            }
                             StaticType::Table(_) => {
                                 return Err(vec![
                                     "Type Error: tables cannot be printed".to_string(),
@@ -471,6 +508,12 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     if needs_sys_alloc_count_decl {
         head.push_str("declare i64 @sys_alloc_count()\n");
     }
+    if needs_any_print_decl {
+        head.push_str("declare void @glm_any_print(i128)\n");
+    }
+    if needs_any_eq_decl {
+        head.push_str("declare i32 @glm_any_eq(i128, i128)\n");
+    }
     if needs_div_guard {
         head.push_str("declare void @glm_div_zero_guard(i64)\n");
     }
@@ -483,6 +526,52 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
         );
     }
 
+    // The runtime anchor: a .so whose own code references no runtime
+    // symbol (a bare `return arg` passthrough) still owes the HOST the
+    // boundary surface — the dev-loop host resolves glm_tbl_new,
+    // glm_tbl_set, glm_tbl_get, glm_tbl_free, and glm_str_intern from
+    // the module so the whole boundary (allocation, census, intern
+    // identity) lives in one runtime instance. An internal constant
+    // holding the five addresses creates the relocations that pull
+    // the archive member in; modules that already reference the
+    // runtime emit nothing extra (their IR stays byte-identical).
+    let rt_referenced = needs_tbl_new_decl
+        || needs_tbl_reserve_decl
+        || needs_tbl_free_decl
+        || needs_tbl_free_except_decl
+        || needs_tbl_free_except_n_decl
+        || needs_tbl_get_decl
+        || needs_tbl_set_decl
+        || needs_str_len_decl
+        || needs_sys_alloc_count_decl
+        || needs_any_print_decl
+        || needs_any_eq_decl
+        || needs_div_guard
+        || needs_exec_main_decl
+        || !registry.is_empty()
+        || has_print;
+    let mut anchor = String::new();
+    if !rt_referenced && matches!(program.entry, EntryKind::Lib) {
+        // llvm.compiler.used pins the anchor: -O3 may otherwise
+        // dead-strip an internal constant nothing references, taking
+        // its archive-pulling relocations with it.
+        anchor.push_str(concat!(
+            "declare ptr @glm_tbl_new(i64, i8)\n",
+            "declare void @glm_tbl_set(ptr, i64, ptr)\n",
+            "declare void @glm_tbl_get(ptr, i64, ptr, i64)\n",
+            "declare void @glm_tbl_free(ptr)\n",
+            "declare ptr @glm_str_intern(ptr, i64)\n",
+            "@.glm_rt_anchor = internal constant [5 x i64] [\n",
+            "  i64 ptrtoint (ptr @glm_tbl_new to i64),\n",
+            "  i64 ptrtoint (ptr @glm_tbl_set to i64),\n",
+            "  i64 ptrtoint (ptr @glm_tbl_get to i64),\n",
+            "  i64 ptrtoint (ptr @glm_tbl_free to i64),\n",
+            "  i64 ptrtoint (ptr @glm_str_intern to i64)\n",
+            "]\n",
+            "@llvm.compiler.used = appending global [1 x ptr] [ptr @.glm_rt_anchor]\n",
+        ));
+    }
+
     let md = if needs_hdr_md {
         "\n!0 = !{!1}\n\
          !1 = distinct !{!\"glm_table_header\", !2}\n\
@@ -491,7 +580,7 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     } else {
         String::new()
     };
-    Ok(format!("{}{}{}{}{}", globals, registry, head, out, md))
+    Ok(format!("{}{}{}{}{}{}", globals, registry, head, anchor, out, md))
 }
 
 fn emit_move(m: &MoveRegs, code: &mut String) {
@@ -502,6 +591,7 @@ fn emit_move(m: &MoveRegs, code: &mut String) {
         MoveRegs::Str { target, source } => Repr::emit_move(target, source, code),
         MoveRegs::Ptr { target, source } => Repr::emit_move(target, source, code),
         MoveRegs::Byte { target, source } => Repr::emit_move(target, source, code),
+        MoveRegs::Any { target, source } => Repr::emit_move(target, source, code),
     }
 }
 
@@ -535,6 +625,11 @@ fn emit_cell_get(
             index,
         } => emit_table_get(target, table, index, allocas, code, ts, needs_tbl_get_decl),
         CellGet::Byte {
+            target,
+            table,
+            index,
+        } => emit_table_get(target, table, index, allocas, code, ts, needs_tbl_get_decl),
+        CellGet::Any {
             target,
             table,
             index,
@@ -632,6 +727,22 @@ fn emit_cell_set_fast(
             needs_hdr_md,
             needs_tbl_set_decl,
         ),
+        CellSetFast::Any {
+            table,
+            index,
+            value,
+            layout,
+        } => emit_table_set_fast(
+            table,
+            index,
+            value,
+            layout,
+            allocas,
+            code,
+            ts,
+            needs_hdr_md,
+            needs_tbl_set_decl,
+        ),
     }
 }
 
@@ -665,6 +776,11 @@ fn emit_cell_set(
             value,
         } => emit_table_set(table, index, value, allocas, code, ts, needs_tbl_set_decl),
         CellSet::Byte {
+            table,
+            index,
+            value,
+        } => emit_table_set(table, index, value, allocas, code, ts, needs_tbl_set_decl),
+        CellSet::Any {
             table,
             index,
             value,
@@ -749,7 +865,13 @@ fn neg_regs(u: &UnaryNum, code: &mut String) {
     }
 }
 
-fn cmp_regs(c: &CmpRegs, int_cond: &str, flt_cond: &str, code: &mut String) {
+fn cmp_regs(
+    c: &CmpRegs,
+    int_cond: &str,
+    flt_cond: &str,
+    code: &mut String,
+    needs_any_eq_decl: &mut bool,
+) {
     match c {
         CmpRegs::Int {
             target,
@@ -776,6 +898,22 @@ fn cmp_regs(c: &CmpRegs, int_cond: &str, flt_cond: &str, code: &mut String) {
             left,
             right,
         } => cmp_op(target, left, right, int_cond, flt_cond, code),
+        // Two Any cells: equality is the runtime's tag-dispatched
+        // compare (glm_any_eq answers 0/1), materialized into the i1
+        // the branch machinery reads. `~=` composes at the lowerer
+        // level (Eq + Not), so this arm is the single Any compare.
+        CmpRegs::Any {
+            target,
+            left,
+            right,
+        } => {
+            *needs_any_eq_decl = true;
+            code.push_str(&format!(
+                "  %a{}.eq = call i32 @glm_any_eq(i128 %v{}, i128 %v{})\n\
+                   %v{} = icmp ne i32 %a{}.eq, 0\n",
+                target.id, left.id, right.id, target.id, target.id
+            ));
+        }
     }
 }
 
@@ -830,11 +968,15 @@ fn emit_table_get<E: Repr>(
             target = target.id
         ));
     } else {
+        // An i128 cell loads from an 8-aligned alloca: the explicit
+        // align keeps LLVM from assuming the i128 ABI alignment (16).
+        let align = if E::esize() == 16 { ", align 8" } else { "" };
         code.push_str(&format!(
-            "  %v{target} = load {ety}, ptr %ts{f}.dst\n",
+            "  %v{target} = load {ety}, ptr %ts{f}.dst{align}\n",
             target = target.id,
             ety = ety,
-            f = f
+            f = f,
+            align = align
         ));
     }
 }
@@ -877,11 +1019,14 @@ fn emit_table_set_fast<E: Repr>(
 
     match layout {
         LayoutVerdict::Dense => {
+            // The buffer is 8-aligned; an i128 store names that align
+            // explicitly or LLVM assumes the i128 ABI alignment (16).
+            let align = E::buf_store_align();
             code.push_str(&format!(
                 "{val_cast}\
                    %ts{f}.d = load ptr, ptr %v{table}, !alias.scope !0\n\
                    %ts{f}.s = getelementptr inbounds {ety}, ptr %ts{f}.d, i64 %v{index}\n\
-                   store {ety} {val_use}, ptr %ts{f}.s, !noalias !0\n\
+                   store {ety} {val_use}, ptr %ts{f}.s{align}, !noalias !0\n\
                    br label %bts{f}cont\n\n\
                  bts{f}cont:\n",
                 val_cast = val_cast,
@@ -889,7 +1034,8 @@ fn emit_table_set_fast<E: Repr>(
                 table = table.id,
                 index = index.id,
                 ety = ety,
-                val_use = val_use
+                val_use = val_use,
+                align = align
             ));
         }
         LayoutVerdict::Sparse => {
@@ -910,6 +1056,7 @@ fn emit_table_set_fast<E: Repr>(
         }
         _ => {
             *needs_tbl_set_decl = true;
+            let align = E::buf_store_align();
             code.push_str(&format!(
                 "{val_cast}\
                    %ts{f}.modep = getelementptr inbounds i8, ptr %v{table}, i64 32\n\
@@ -919,7 +1066,7 @@ fn emit_table_set_fast<E: Repr>(
                  bts{f}dense:\n\
                    %ts{f}.d = load ptr, ptr %v{table}, !alias.scope !0\n\
                    %ts{f}.s = getelementptr inbounds {ety}, ptr %ts{f}.d, i64 %v{index}\n\
-                   store {ety} {val_use}, ptr %ts{f}.s, !noalias !0\n\
+                   store {ety} {val_use}, ptr %ts{f}.s{align}, !noalias !0\n\
                    br label %bts{f}cont\n\n\
                  bts{f}sparse:\n\
                    store {ety} {val_use}, ptr %ts{f}.valp\n\
@@ -931,7 +1078,8 @@ fn emit_table_set_fast<E: Repr>(
                 table = table.id,
                 index = index.id,
                 ety = ety,
-                val_use = val_use
+                val_use = val_use,
+                align = align
             ));
         }
     }
@@ -962,11 +1110,13 @@ fn emit_table_set<E: Repr>(
             value = value.id
         ));
     } else {
+        let align = E::buf_store_align();
         code.push_str(&format!(
-            "  store {ety} %v{value}, ptr %ts{f}.valp\n",
+            "  store {ety} %v{value}, ptr %ts{f}.valp{align}\n",
             ety = ety,
             value = value.id,
-            f = f
+            f = f,
+            align = align
         ));
     }
     code.push_str(&format!(

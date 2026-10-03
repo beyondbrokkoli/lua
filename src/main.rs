@@ -45,12 +45,23 @@ enum HostArg {
     Int(i64),
     Float(f64),
     Bool(bool),
+    /// A raw string word — interned later through the .so's own
+    /// glm_str_intern (for the String kind), keeping the identity
+    /// space inside the module's runtime instance.
     Str(Vec<u8>),
+    /// An Any cell, packed from the shared classification: a tagged
+    /// word whose kind the DECLARED precedence picked (int → float →
+    /// bool → string) — the one dynamic boundary contract. String
+    /// words intern through the .so like every other kind.
+    Any(i128),
 }
 
 /// The HostArg a word parses to under one GLM_ARG_* kind — the same
 /// grammar the embedded exe host (glm_exec_main's set_word) parses
-/// with, so the two hosts answer identically for the same module.
+/// with, so the two hosts answer identically for the same module. The
+/// ANY kind never refuses a word: the shared classifier applies the
+/// declared precedence and the cell packs locally (strings defer to
+/// the .so's intern, exactly like the String kind).
 fn parse_word(raw: &str, kind: i32) -> Result<HostArg, ()> {
     match kind {
         glm_rt::rt::GLM_ARG_INT => raw.parse::<i64>().map(HostArg::Int).map_err(|_| ()),
@@ -61,6 +72,25 @@ fn parse_word(raw: &str, kind: i32) -> Result<HostArg, ()> {
             _ => Err(()),
         },
         glm_rt::rt::GLM_ARG_STRING => Ok(HostArg::Str(raw.as_bytes().to_vec())),
+        glm_rt::rt::GLM_ARG_ANY => {
+            use glm_rt::rt::GLM_ARG_FLOAT as K_FLOAT;
+            use glm_rt::rt::GLM_ARG_INT as K_INT;
+            let cell = match glm_rt::classify_word(raw.as_bytes()) {
+                glm_rt::AnyWord::Int(v) => glm_rt::glm_any_pack(K_INT, v as u64),
+                glm_rt::AnyWord::Float(v) => glm_rt::glm_any_pack(K_FLOAT, v.to_bits()),
+                glm_rt::AnyWord::Bool(v) => {
+                    glm_rt::glm_any_pack(glm_rt::rt::GLM_ARG_BOOL, u64::from(v))
+                }
+                glm_rt::AnyWord::Str => {
+                    // Intern through the .so (deferred to the store
+                    // loop below, where glm_str_intern is resolved —
+                    // parse_word itself stays pure). The placeholder
+                    // carries the bytes; the loop re-packs.
+                    return Ok(HostArg::Str(raw.as_bytes().to_vec()));
+                }
+            };
+            Ok(HostArg::Any(cell))
+        }
         _ => Err(()),
     }
 }
@@ -165,7 +195,12 @@ unsafe fn run_boundary(words: &[String]) -> Result<(), String> {
     let kind = unsafe { glm_arg_kind() };
     let mut args = std::ptr::null_mut::<GlmTable>();
     if kind != glm_rt::rt::GLM_ARG_NONE {
-        args = unsafe { glm_tbl_new(if kind == glm_rt::rt::GLM_ARG_BOOL { 1 } else { 8 }, 0) };
+        let esize = match kind {
+            glm_rt::rt::GLM_ARG_BOOL => 1,
+            glm_rt::rt::GLM_ARG_ANY => 16,
+            _ => 8,
+        };
+        args = unsafe { glm_tbl_new(esize, 0) };
         let mut parsed = Vec::with_capacity(words.len());
         for raw in words {
             match parse_word(raw, kind) {
@@ -195,7 +230,21 @@ unsafe fn run_boundary(words: &[String]) -> Result<(), String> {
                 },
                 HostArg::Str(bytes) => unsafe {
                     let p = glm_str_intern(bytes.as_ptr(), bytes.len());
-                    glm_tbl_set(args, i as i64, (&p as *const *const u8).cast::<u8>())
+                    if kind == glm_rt::rt::GLM_ARG_ANY {
+                        // A string word under the dynamic contract: the
+                        // intern gave the .so-identity pointer, pack it
+                        // as the cell's payload now.
+                        let cell = glm_rt::glm_any_pack(
+                            glm_rt::rt::GLM_ARG_STRING,
+                            p as u64,
+                        );
+                        glm_tbl_set(args, i as i64, (&cell as *const i128).cast::<u8>());
+                    } else {
+                        glm_tbl_set(args, i as i64, (&p as *const *const u8).cast::<u8>());
+                    }
+                },
+                HostArg::Any(v) => unsafe {
+                    glm_tbl_set(args, i as i64, (v as *const i128).cast::<u8>())
                 },
             }
         }
@@ -255,10 +304,10 @@ unsafe fn render_cells(t: *mut GlmTable, depth: u32, glm_tbl_get: GlmTblGet) -> 
     let shown = len.clamp(0, if depth == 0 { 8 } else { 4 }) as usize;
     let mut cells = Vec::with_capacity(shown);
     for i in 0..shown as i64 {
-        let mut buf = [0u8; 8];
+        let mut buf = [0u8; 16];
         unsafe { glm_tbl_get(t, i, buf.as_mut_ptr(), esize) };
         if rows {
-            let row = usize::from_ne_bytes(buf) as *mut GlmTable;
+            let row = usize::from_ne_bytes(buf[..8].try_into().unwrap()) as *mut GlmTable;
             cells.push(if row.is_null() {
                 "null".to_string()
             } else if !is_plausible_row(row as usize) {
@@ -268,8 +317,23 @@ unsafe fn render_cells(t: *mut GlmTable, depth: u32, glm_tbl_get: GlmTblGet) -> 
             } else {
                 "row…".to_string()
             });
+        } else if esize == 16 {
+            // A tagged Any cell: decode tag (high 64) and payload
+            // (low 64) — the host-side twin of the runtime's
+            // any_describe.
+            let payload = u64::from_ne_bytes(buf[..8].try_into().unwrap());
+            let tag = i32::from_ne_bytes(buf[8..12].try_into().unwrap());
+            cells.push(match tag {
+                k if k == glm_rt::rt::GLM_ARG_INT => format!("{}:int", payload as i64),
+                k if k == glm_rt::rt::GLM_ARG_FLOAT => {
+                    format!("{}:float", f64::from_bits(payload))
+                }
+                k if k == glm_rt::rt::GLM_ARG_BOOL => format!("{}:bool", payload != 0),
+                k if k == glm_rt::rt::GLM_ARG_STRING => format!("{payload:#x}:string"),
+                _ => format!("{payload}:int"),
+            });
         } else if esize == 8 {
-            cells.push(i64::from_ne_bytes(buf).to_string());
+            cells.push(i64::from_ne_bytes(buf[..8].try_into().unwrap()).to_string());
         } else {
             cells.push((buf[0] != 0).to_string());
         }
@@ -485,6 +549,9 @@ fn arg_kind_words(kind: i32) -> &'static str {
         glm_rt::rt::GLM_ARG_FLOAT => "numbers (64-bit floats)",
         glm_rt::rt::GLM_ARG_BOOL => "booleans ('true'/'false')",
         glm_rt::rt::GLM_ARG_STRING => "strings (any word)",
+        // Every word parses — the tags differ per cell, chosen by the
+        // declared precedence the runtime applies.
+        glm_rt::rt::GLM_ARG_ANY => "int, float, bool, or string words",
         _ => "integers (64-bit)",
     }
 }
@@ -494,6 +561,7 @@ fn arg_kind_table(kind: i32) -> &'static str {
         glm_rt::rt::GLM_ARG_FLOAT => "Table<Float>",
         glm_rt::rt::GLM_ARG_BOOL => "Table<Boolean>",
         glm_rt::rt::GLM_ARG_STRING => "Table<String>",
+        glm_rt::rt::GLM_ARG_ANY => "Table<Any>",
         _ => "Table<Integer>",
     }
 }

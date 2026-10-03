@@ -61,7 +61,7 @@ script's code asked for:
 | `if arg[0] then`, `not arg[0]`        | `Table<Boolean>`   | `true` / `false`   |
 | `arg[0] == "x"`                       | `Table<String>`    | any word           |
 | `t[arg[0]]` (any key position: store, ctor entry, read) | `Table<Integer>` | 64-bit integers |
-| nothing but copies, prints, and passes | **compile error**  | —                  |
+| nothing but copies, prints, and passes | `Table<Any>`      | every word         |
 
 One boundary, one cell type — a Float demand after an Int demand is a
 compile error, exactly like inline calls are monomorphic. Cells copied
@@ -70,27 +70,43 @@ way, a boundary read passed into an inline function pins through the
 parameter, and the pin survives loops and if/else joins. A `Table`
 element cannot be inferred: boundary cells hold scalars.
 
-**No silent defaults.** An element the script never demands a type for
-is a compile-time error, not a fallback Integer: the script defines its
-type, and a script that only copies or prints its cells has defined
-none.
+**No silent defaults — and no refusals either.** An element the script
+never demands a type for resolves to **Any**: the boundary's own
+dynamic cell. The reasoning is airtight by construction: the script
+checked clean without ever pinning the element, which means its cells
+were only ever **copied, printed, passed along, or returned** — never
+used in a typed position (arithmetic, ordering, conditions, table
+keys, stores into typed tables would each have pinned the element to
+a concrete scalar first). That exact usage set is what the Any cell
+serves, so the script is runnable as-is:
 
-```
-Type Error: the boundary 'arg' table's element type is unconstrained (line 3) —
-its cells are only copied or passed along there; use one in a typed position
-(arithmetic, comparison, condition, equality, table key) to pin the cell type
-```
+- Each cell is a 16-byte tagged word — payload in the low 64 bits,
+  `GLM_ARG_*` tag in the high 64 — riding the same `GlmTable`
+  machinery as every other element (one `Table<Any>`, one esize).
+- The **host's words** pick each cell's kind at load, under the
+  declared precedence **int → float → bool → string**: `5` is an
+  Integer cell, `2.5` a Float, `true`/`false` Bools, anything else a
+  String cell through the intern. The precedence is a documented
+  property of the boundary vocabulary, not a guess about the script.
+  Cells may differ in kind within one invocation.
+- Inside the script the cell stays opaque: `print(arg[0])` dispatches
+  on the tag at runtime, copies (locals, parameters, ctor entries,
+  whole-table returns) move the 16 bytes blind, and
+  `arg[0] == arg[1]` compares tags and payloads (strings by intern
+  identity). Any typed use still pins the boundary monomorphically —
+  the dynamic layer only ever covers the usage the static one
+  provably left unconstrained.
 
-The error names every line whose value carried the unresolved cell —
-directly (`print(arg[0])`) or through a parameter (`f(arg[0)]` with a
-printing body). A shadowing `local arg` never reads the boundary, so it
-pins nothing and errors nothing.
+Dynamics live at the boundary, and only there — inside the script,
+strict static monomorphic typing is unchanged (a script with a typed
+Int use still rejects a Float word at the host with the same message
+as before).
 
 **The contract is exported.** Every linked module — the `.so` and the
 `--exe` executable alike — carries:
 
 ```c
-i32 glm_arg_kind(void); /* -1 none, 0 int, 1 float, 2 bool, 3 string */
+i32 glm_arg_kind(void); /* -1 none, 0 int, 1 float, 2 bool, 3 string, 4 any */
 ```
 
 Any host (C, LuaJIT FFI, a Rust runner) queries the module itself for
@@ -98,7 +114,9 @@ how to parse its words instead of guessing; the dev-loop host and the
 executable's embedded host both key off the same answer (the compiler
 resolved them to one parse path). `-1` names an argless module: the
 script never reads `arg`, the host passes null, and extra words are
-nobody's business.
+nobody's business. `4` (Any) names the dynamic contract above: every
+word parses, each cell carrying its own tag chosen by the declared
+precedence.
 
 String words intern through the runtime's pool: the module's distinct
 literals are registered at load (the backend emits a string registry

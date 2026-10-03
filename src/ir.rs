@@ -18,6 +18,15 @@ pub struct Str;
 pub struct Ptr;
 #[derive(Debug, Clone, Copy)]
 pub struct Byte;
+/// The boundary's dynamic cell: a tagged word — payload in the low
+/// 64 bits, kind tag (the GLM_ARG_* constants) in the high 64 —
+/// living whole in one i128 register and one 16-byte table cell. It
+/// exists only where an unconstrained boundary element flowed; every
+/// operation on it is a dispatch (print, equality) or a whole-word
+/// copy, because that is all a script whose check left the seed
+/// unresolved can do with it.
+#[derive(Debug, Clone, Copy)]
+pub struct Any;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Reg<R: Repr + ?Sized> {
@@ -44,6 +53,12 @@ pub trait Repr {
     }
     const IS_PACKED: bool = false;
     const IS_FLOAT: bool = false;
+    /// The explicit align clause a raw store into a table's data
+    /// buffer needs: buffers are 8-aligned, and an i128 store without
+    /// an align would let LLVM assume the i128 ABI alignment (16).
+    fn buf_store_align() -> &'static str {
+        ""
+    }
     fn emit_move(target: &Reg<Self>, source: &Reg<Self>, code: &mut String);
     fn any(reg: Reg<Self>) -> AnyReg;
 }
@@ -140,6 +155,24 @@ impl Repr for Byte {
     }
 }
 
+impl Repr for Any {
+    fn llvm() -> &'static str {
+        "i128"
+    }
+    fn esize() -> u32 {
+        16
+    }
+    fn buf_store_align() -> &'static str {
+        ", align 8"
+    }
+    fn emit_move(target: &Reg<Self>, source: &Reg<Self>, code: &mut String) {
+        code.push_str(&format!("  %v{} = add i128 %v{}, 0\n", target.id, source.id));
+    }
+    fn any(reg: Reg<Self>) -> AnyReg {
+        AnyReg::Any(reg)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum AnyReg {
     Int(Reg<Int>),
@@ -148,6 +181,7 @@ pub enum AnyReg {
     Str(Reg<Str>),
     Ptr(Reg<Ptr>),
     Byte(Reg<Byte>),
+    Any(Reg<Any>),
 }
 
 impl AnyReg {
@@ -159,6 +193,7 @@ impl AnyReg {
             AnyReg::Str(r) => r.id,
             AnyReg::Ptr(r) => r.id,
             AnyReg::Byte(r) => r.id,
+            AnyReg::Any(r) => r.id,
         }
     }
 
@@ -170,6 +205,7 @@ impl AnyReg {
             AnyReg::Str(r) => CellVal::Ptr(Reg::new(r.id)),
             AnyReg::Ptr(r) => CellVal::Ptr(r),
             AnyReg::Byte(r) => CellVal::Byte(r),
+            AnyReg::Any(r) => CellVal::Any(r),
         }
     }
 }
@@ -180,6 +216,7 @@ pub enum RegKind {
     Float,
     Bool,
     Ptr,
+    Any,
 }
 
 impl RegKind {
@@ -189,6 +226,7 @@ impl RegKind {
             RegKind::Float => AnyReg::Float(Reg::new(id)),
             RegKind::Bool => AnyReg::Bool(Reg::new(id)),
             RegKind::Ptr => AnyReg::Ptr(Reg::new(id)),
+            RegKind::Any => AnyReg::Any(Reg::new(id)),
         }
     }
 }
@@ -198,6 +236,7 @@ pub fn repr_of(ty: &StaticType) -> RegKind {
         StaticType::Integer => RegKind::Int,
         StaticType::Float => RegKind::Float,
         StaticType::Boolean => RegKind::Bool,
+        StaticType::Any => RegKind::Any,
         StaticType::String | StaticType::Table(_) | StaticType::Unknown(_) => RegKind::Ptr,
     }
 }
@@ -209,6 +248,7 @@ pub enum CellVal {
     Bool(Reg<Bool>),
     Ptr(Reg<Ptr>),
     Byte(Reg<Byte>),
+    Any(Reg<Any>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +258,7 @@ pub enum CellTy {
     Bool,
     Ptr,
     Byte,
+    Any,
 }
 
 impl CellTy {
@@ -226,6 +267,7 @@ impl CellTy {
             StaticType::Integer => CellTy::Int,
             StaticType::Float => CellTy::Float,
             StaticType::Boolean => CellTy::Bool,
+            StaticType::Any => CellTy::Any,
             StaticType::String | StaticType::Table(_) => CellTy::Ptr,
             StaticType::Unknown(_) => CellTy::Byte,
         }
@@ -258,6 +300,10 @@ pub enum MoveRegs {
         target: Reg<Byte>,
         source: Reg<Byte>,
     },
+    Any {
+        target: Reg<Any>,
+        source: Reg<Any>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +330,11 @@ pub enum CellGet {
     },
     Byte {
         target: Reg<Byte>,
+        table: Reg<Ptr>,
+        index: Reg<Int>,
+    },
+    Any {
+        target: Reg<Any>,
         table: Reg<Ptr>,
         index: Reg<Int>,
     },
@@ -315,6 +366,11 @@ pub enum CellSet {
         table: Reg<Ptr>,
         index: Reg<Int>,
         value: Reg<Byte>,
+    },
+    Any {
+        table: Reg<Ptr>,
+        index: Reg<Int>,
+        value: Reg<Any>,
     },
 }
 
@@ -348,6 +404,12 @@ pub enum CellSetFast {
         table: Reg<Ptr>,
         index: Reg<Int>,
         value: Reg<Byte>,
+        layout: crate::shape::LayoutVerdict,
+    },
+    Any {
+        table: Reg<Ptr>,
+        index: Reg<Int>,
+        value: Reg<Any>,
         layout: crate::shape::LayoutVerdict,
     },
 }
@@ -421,6 +483,16 @@ pub enum CmpRegs {
         left: Reg<Ptr>,
         right: Reg<Ptr>,
     },
+    /// Two Any cells compared for equality — a runtime dispatch on
+    /// the tags (glm_any_eq), the checker having proved both operands
+    /// carry the unconstrained boundary element. Only `==`/`~=` ride
+    /// here; ordering comparisons demand numerics and would have
+    /// pinned the boundary long before lowering.
+    Any {
+        target: Reg<Bool>,
+        left: Reg<Any>,
+        right: Reg<Any>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -441,6 +513,10 @@ pub enum PhiRegs {
         target: Reg<Ptr>,
         args: Vec<(BlockId, Reg<Ptr>)>,
     },
+    Any {
+        target: Reg<Any>,
+        args: Vec<(BlockId, Reg<Any>)>,
+    },
 }
 
 impl PhiRegs {
@@ -450,6 +526,7 @@ impl PhiRegs {
             PhiRegs::Float { target, .. } => target.id,
             PhiRegs::Bool { target, .. } => target.id,
             PhiRegs::Ptr { target, .. } => target.id,
+            PhiRegs::Any { target, .. } => target.id,
         }
     }
 
@@ -462,6 +539,7 @@ impl PhiRegs {
             PhiRegs::Float { args, .. } => ids(args),
             PhiRegs::Bool { args, .. } => ids(args),
             PhiRegs::Ptr { args, .. } => ids(args),
+            PhiRegs::Any { args, .. } => ids(args),
         }
     }
 
@@ -477,6 +555,7 @@ impl PhiRegs {
             PhiRegs::Float { args, .. } => blocks(args),
             PhiRegs::Bool { args, .. } => blocks(args),
             PhiRegs::Ptr { args, .. } => blocks(args),
+            PhiRegs::Any { args, .. } => blocks(args),
         }
     }
 }
@@ -711,6 +790,37 @@ impl CellRepr for Byte {
     }
 }
 
+impl CellRepr for Any {
+    const TAG: CellTy = CellTy::Any;
+    fn get(target: Reg<Self>, table: Reg<Ptr>, index: Reg<Int>) -> CellGet {
+        CellGet::Any {
+            target,
+            table,
+            index,
+        }
+    }
+    fn set(table: Reg<Ptr>, index: Reg<Int>, value: Reg<Self>) -> CellSet {
+        CellSet::Any {
+            table,
+            index,
+            value,
+        }
+    }
+    fn set_fast(
+        table: Reg<Ptr>,
+        index: Reg<Int>,
+        value: Reg<Self>,
+        layout: crate::shape::LayoutVerdict,
+    ) -> CellSetFast {
+        CellSetFast::Any {
+            table,
+            index,
+            value,
+            layout,
+        }
+    }
+}
+
 pub trait CmpRepr: Repr {
     fn cmp(target: Reg<Bool>, left: Reg<Self>, right: Reg<Self>) -> CmpRegs;
 }
@@ -758,6 +868,16 @@ impl CmpRepr for Str {
 impl CmpRepr for Ptr {
     fn cmp(target: Reg<Bool>, left: Reg<Self>, right: Reg<Self>) -> CmpRegs {
         CmpRegs::Ptr {
+            target,
+            left,
+            right,
+        }
+    }
+}
+
+impl CmpRepr for Any {
+    fn cmp(target: Reg<Bool>, left: Reg<Self>, right: Reg<Self>) -> CmpRegs {
+        CmpRegs::Any {
             target,
             left,
             right,
@@ -819,6 +939,18 @@ impl PhiRepr for Ptr {
     }
 }
 
+impl PhiRepr for Any {
+    fn phi(target: Reg<Self>, args: Vec<(BlockId, Reg<Self>)>) -> PhiRegs {
+        PhiRegs::Any { target, args }
+    }
+    fn of(reg: AnyReg) -> Option<Reg<Self>> {
+        match reg {
+            AnyReg::Any(r) => Some(r),
+            _ => None,
+        }
+    }
+}
+
 impl MoveRegs {
     pub fn target_id(&self) -> RegId {
         match self {
@@ -828,6 +960,7 @@ impl MoveRegs {
             MoveRegs::Str { target, .. } => target.id,
             MoveRegs::Ptr { target, .. } => target.id,
             MoveRegs::Byte { target, .. } => target.id,
+            MoveRegs::Any { target, .. } => target.id,
         }
     }
     pub fn source_id(&self) -> RegId {
@@ -838,6 +971,7 @@ impl MoveRegs {
             MoveRegs::Str { source, .. } => source.id,
             MoveRegs::Ptr { source, .. } => source.id,
             MoveRegs::Byte { source, .. } => source.id,
+            MoveRegs::Any { source, .. } => source.id,
         }
     }
 }
@@ -850,6 +984,7 @@ impl CellGet {
             CellGet::Bool { target, .. } => target.id,
             CellGet::Ptr { target, .. } => target.id,
             CellGet::Byte { target, .. } => target.id,
+            CellGet::Any { target, .. } => target.id,
         }
     }
 }
@@ -889,6 +1024,7 @@ impl CmpRegs {
             CmpRegs::Bool { target, .. } => target.id,
             CmpRegs::Str { target, .. } => target.id,
             CmpRegs::Ptr { target, .. } => target.id,
+            CmpRegs::Any { target, .. } => target.id,
         }
     }
 }
@@ -920,6 +1056,12 @@ pub enum Instruction {
     LoadBool {
         target: Reg<Bool>,
         val: bool,
+    },
+    /// The zero of the Any cell — payload 0 under tag 0 (an Integer
+    /// zero, matching every other repr's total-read zero). The
+    /// fall-through value of an inline scope whose return type is Any.
+    LoadAnyZero {
+        target: Reg<Any>,
     },
     LoadString {
         target: Reg<Str>,
@@ -1012,6 +1154,7 @@ impl Instruction {
             Instruction::LoadInt { target, .. } => Some(target.id),
             Instruction::LoadFloat { target, .. } => Some(target.id),
             Instruction::LoadBool { target, .. } => Some(target.id),
+            Instruction::LoadAnyZero { target } => Some(target.id),
             Instruction::LoadString { target, .. } => Some(target.id),
             Instruction::StrLen { target, .. } => Some(target.id),
             Instruction::LoadNull { target } => Some(target.id),

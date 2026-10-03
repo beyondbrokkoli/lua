@@ -11,6 +11,16 @@ pub enum StaticType {
     String,
     Table(Box<StaticType>),
     Unknown(usize),
+    /// The boundary's own dynamic cell: what an unconstrained `arg`
+    /// element resolves to. It never appears during checking — the
+    /// finalizer binds the seed to it AFTER the whole script checked
+    /// clean, so no typed position ever saw it (any typed use would
+    /// have pinned the seed to a concrete scalar first). Post-checker
+    /// it flows exactly where the seed's unknowns flowed: the boundary
+    /// table's element, locals and parameters carrying copies, ctor
+    /// elems fed only by boundary cells. The one dynamic spot in an
+    /// otherwise monomorphic script — dynamics live at the boundary.
+    Any,
 }
 
 impl std::fmt::Display for StaticType {
@@ -22,6 +32,7 @@ impl std::fmt::Display for StaticType {
             StaticType::String => write!(f, "String"),
             StaticType::Table(inner) => write!(f, "Table<{}>", inner),
             StaticType::Unknown(_) => write!(f, "?"),
+            StaticType::Any => write!(f, "Any"),
         }
     }
 }

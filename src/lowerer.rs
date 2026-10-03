@@ -18,12 +18,15 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct LowerError(pub String);
 
 /// The boundary contract's GlmElem face — what the IR program exports
-/// (glm_arg_kind) and what the hosts parse by.
+/// (glm_arg_kind) and what the hosts parse by. Any is the dynamic
+/// boundary cell: the module's answer that the HOST picks each word's
+/// kind at load (declared precedence int → float → bool → string).
 pub fn boundary_elem_of(elem: StaticType) -> glm_rt::GlmElem {
     match elem {
         StaticType::Float => glm_rt::GlmElem::Float,
         StaticType::Boolean => glm_rt::GlmElem::Boolean,
         StaticType::String => glm_rt::GlmElem::String,
+        StaticType::Any => glm_rt::GlmElem::Any,
         StaticType::Integer | StaticType::Table(_) | StaticType::Unknown(_) => {
             glm_rt::GlmElem::Integer
         }
@@ -567,6 +570,12 @@ impl<'a> IrLowerer<'a> {
                 self.emit(Instruction::LoadNull { target: Reg::new(r) });
                 AnyReg::Ptr(Reg::new(r))
             }
+            RegKind::Any => {
+                self.emit(Instruction::LoadAnyZero {
+                    target: Reg::new(r),
+                });
+                AnyReg::Any(Reg::new(r))
+            }
         }
     }
 
@@ -685,6 +694,17 @@ impl<'a> IrLowerer<'a> {
                                 target: Reg::new(reg_id),
                             });
                             AnyReg::Ptr(Reg::new(reg_id))
+                        }
+                        // An Any bare local: the checker resolves
+                        // boundary-chained bare declarations through
+                        // substitutions (resolve_all_scopes), so this
+                        // arm only fires when the type truly is Any —
+                        // its zero is the Any cell's zero.
+                        StaticType::Any => {
+                            self.emit(Instruction::LoadAnyZero {
+                                target: Reg::new(reg_id),
+                            });
+                            AnyReg::Any(Reg::new(reg_id))
                         }
                     };
                     bindings.push((reg, ty, LayoutVerdict::default()));
@@ -1816,6 +1836,17 @@ impl<'a> IrLowerer<'a> {
                         OrdPair::BB(a, b) => self.cmp3(Instruction::Less, reg, a, b),
                         OrdPair::SS(a, b) => self.cmp3(Instruction::Less, reg, a, b),
                         OrdPair::PP(a, b) => self.cmp3(Instruction::Less, reg, a, b),
+                        // Unreachable: an ordering comparison demands
+                        // numeric operands, which would have pinned the
+                        // boundary to a concrete scalar at check time —
+                        // Any cells never reach an ordering position.
+                        OrdPair::AA(..) => {
+                            return Err(LowerError(
+                                "Lower Error: an ordering comparison on Any boundary cells — \
+                                 the checker and the lowerer disagree"
+                                    .into(),
+                            ));
+                        }
                     },
                     BinOp::GreaterThan => match ord_pair(l_any, r_any)? {
                         OrdPair::II(a, b) => self.cmp3(Instruction::Less, reg, b, a),
@@ -1823,6 +1854,13 @@ impl<'a> IrLowerer<'a> {
                         OrdPair::BB(a, b) => self.cmp3(Instruction::Less, reg, b, a),
                         OrdPair::SS(a, b) => self.cmp3(Instruction::Less, reg, b, a),
                         OrdPair::PP(a, b) => self.cmp3(Instruction::Less, reg, b, a),
+                        OrdPair::AA(..) => {
+                            return Err(LowerError(
+                                "Lower Error: an ordering comparison on Any boundary cells — \
+                                 the checker and the lowerer disagree"
+                                    .into(),
+                            ));
+                        }
                     },
                     BinOp::LessEq => match ord_pair(l_any, r_any)? {
                         OrdPair::II(a, b) => self.cmp3(Instruction::Leq, reg, a, b),
@@ -1830,6 +1868,13 @@ impl<'a> IrLowerer<'a> {
                         OrdPair::BB(a, b) => self.cmp3(Instruction::Leq, reg, a, b),
                         OrdPair::SS(a, b) => self.cmp3(Instruction::Leq, reg, a, b),
                         OrdPair::PP(a, b) => self.cmp3(Instruction::Leq, reg, a, b),
+                        OrdPair::AA(..) => {
+                            return Err(LowerError(
+                                "Lower Error: an ordering comparison on Any boundary cells — \
+                                 the checker and the lowerer disagree"
+                                    .into(),
+                            ));
+                        }
                     },
                     BinOp::GreaterEq => match ord_pair(l_any, r_any)? {
                         OrdPair::II(a, b) => self.cmp3(Instruction::Geq, reg, a, b),
@@ -1837,6 +1882,13 @@ impl<'a> IrLowerer<'a> {
                         OrdPair::BB(a, b) => self.cmp3(Instruction::Geq, reg, a, b),
                         OrdPair::SS(a, b) => self.cmp3(Instruction::Geq, reg, a, b),
                         OrdPair::PP(a, b) => self.cmp3(Instruction::Geq, reg, a, b),
+                        OrdPair::AA(..) => {
+                            return Err(LowerError(
+                                "Lower Error: an ordering comparison on Any boundary cells — \
+                                 the checker and the lowerer disagree"
+                                    .into(),
+                            ));
+                        }
                     },
                     BinOp::Equal => match ord_pair(l_any, r_any)? {
                         OrdPair::II(a, b) => self.cmp3(Instruction::Eq, reg, a, b),
@@ -1844,6 +1896,10 @@ impl<'a> IrLowerer<'a> {
                         OrdPair::BB(a, b) => self.cmp3(Instruction::Eq, reg, a, b),
                         OrdPair::SS(a, b) => self.cmp3(Instruction::Eq, reg, a, b),
                         OrdPair::PP(a, b) => self.cmp3(Instruction::Eq, reg, a, b),
+                        // Two Any cells: the tag-dispatched runtime
+                        // compare (equal iff same kind and equal
+                        // payload — strings by pool identity).
+                        OrdPair::AA(a, b) => self.cmp3(Instruction::Eq, reg, a, b),
                     },
                     BinOp::NotEqual => {
                         let e = self.next_reg();
@@ -1853,6 +1909,7 @@ impl<'a> IrLowerer<'a> {
                             OrdPair::BB(a, b) => self.cmp3(Instruction::Eq, e, a, b),
                             OrdPair::SS(a, b) => self.cmp3(Instruction::Eq, e, a, b),
                             OrdPair::PP(a, b) => self.cmp3(Instruction::Eq, e, a, b),
+                            OrdPair::AA(a, b) => self.cmp3(Instruction::Eq, e, a, b),
                         }
                         self.emit(Instruction::Not {
                             target: Reg::new(reg),

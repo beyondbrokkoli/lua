@@ -4,7 +4,6 @@ use crate::ir::{
     AnyReg, BlockId, Bool, Byte, CellRepr, CellTy, CellVal, CmpRegs, CmpRepr, Float, Instruction,
     Int, MoveRegs, NumRegs, NumRegsRhs, NumRepr, PhiRegs, PhiRepr, Ptr, Reg, RegKind, Str,
 };
-
 pub(super) fn elem_of_ty(ty: &StaticType) -> Result<StaticType, LowerError> {
     match ty {
         StaticType::Table(elem) => Ok((**elem).clone()),
@@ -90,6 +89,7 @@ pub(super) enum OrdPair {
     BB(Reg<Bool>, Reg<Bool>),
     SS(Reg<crate::ir::Str>, Reg<crate::ir::Str>),
     PP(Reg<Ptr>, Reg<Ptr>),
+    AA(Reg<crate::ir::Any>, Reg<crate::ir::Any>),
 }
 
 pub(super) fn ord_pair(l: AnyReg, r: AnyReg) -> Result<OrdPair, LowerError> {
@@ -99,6 +99,7 @@ pub(super) fn ord_pair(l: AnyReg, r: AnyReg) -> Result<OrdPair, LowerError> {
         (AnyReg::Bool(a), AnyReg::Bool(b)) => Ok(OrdPair::BB(a, b)),
         (AnyReg::Str(a), AnyReg::Str(b)) => Ok(OrdPair::SS(a, b)),
         (AnyReg::Ptr(a), AnyReg::Ptr(b)) => Ok(OrdPair::PP(a, b)),
+        (AnyReg::Any(a), AnyReg::Any(b)) => Ok(OrdPair::AA(a, b)),
         // A string that traveled through a cell or a join arrives as
         // Ptr — the id-preserved widening of the Str arm. The checker
         // proved both operands String, so the pair joins to Ptr and
@@ -130,6 +131,7 @@ pub(super) fn phi_of(
         RegKind::Float => narrow::<Float>(target, arms),
         RegKind::Bool => narrow::<Bool>(target, arms),
         RegKind::Ptr => narrow::<Ptr>(target, arms),
+        RegKind::Any => narrow::<crate::ir::Any>(target, arms),
     }
 }
 
@@ -147,6 +149,12 @@ pub(super) fn phi_push(phi: &mut PhiRegs, block: BlockId, reg: AnyReg) -> Result
         }
         PhiRegs::Ptr { args, .. } => {
             args.push((block, <Ptr as PhiRepr>::of(reg).ok_or_else(mismatch)?))
+        }
+        PhiRegs::Any { args, .. } => {
+            args.push((
+                block,
+                <crate::ir::Any as PhiRepr>::of(reg).ok_or_else(mismatch)?,
+            ))
         }
     }
     Ok(())
@@ -233,6 +241,13 @@ impl IrLowerer<'_> {
                 }));
                 AnyReg::Byte(Reg::new(t))
             }
+            AnyReg::Any(s) => {
+                self.emit(Instruction::Move(MoveRegs::Any {
+                    target: Reg::new(t),
+                    source: s,
+                }));
+                AnyReg::Any(Reg::new(t))
+            }
         }
     }
 
@@ -249,6 +264,7 @@ impl IrLowerer<'_> {
             CellTy::Bool => self.get::<Bool>(target, table, index),
             CellTy::Ptr => self.get::<Ptr>(target, table, index),
             CellTy::Byte => self.get::<Byte>(target, table, index),
+            CellTy::Any => self.get::<crate::ir::Any>(target, table, index),
         }
     }
 
@@ -279,6 +295,7 @@ impl IrLowerer<'_> {
             CellVal::Bool(v) => self.set(table, index, v, elem),
             CellVal::Ptr(v) => self.set(table, index, v, elem),
             CellVal::Byte(v) => self.set(table, index, v, elem),
+            CellVal::Any(v) => self.set(table, index, v, elem),
         }
     }
 
@@ -296,6 +313,7 @@ impl IrLowerer<'_> {
             CellVal::Bool(v) => self.set_fast(table, index, v, elem, layout),
             CellVal::Ptr(v) => self.set_fast(table, index, v, elem, layout),
             CellVal::Byte(v) => self.set_fast(table, index, v, elem, layout),
+            CellVal::Any(v) => self.set_fast(table, index, v, elem, layout),
         }
     }
 

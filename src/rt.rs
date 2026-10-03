@@ -57,7 +57,11 @@ pub struct GlmTable {
     pub esize: usize,
     pub mode: TableMode,
     pub contains_tables: u8,
-    pub sparse_map: *mut HashMap<i64, u64>,
+    /// The far-key overflow map: born-Sparse tables fill it with every
+    /// store, Dense tables allocate it lazily on the first far store.
+    /// The value lane is u128 so an Any (tagged) cell's whole 16
+    /// bytes ride it; 8- and 1-byte cells sit in the low bits.
+    pub sparse_map: *mut HashMap<i64, u128>,
 }
 
 static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -237,7 +241,7 @@ pub const SPARSE_THRESHOLD: i64 = 100_000;
 /// `t` live from glm_tbl_new, mode Dense or Sparse; the caller holds
 /// no other borrow.
 #[inline(never)]
-unsafe fn overflow_map(t: *mut GlmTable) -> &'static mut HashMap<i64, u64> {
+unsafe fn overflow_map(t: *mut GlmTable) -> &'static mut HashMap<i64, u128> {
     let tbl = unsafe { &mut *t };
     if tbl.sparse_map.is_null() {
         tbl.sparse_map = Box::into_raw(Box::new(HashMap::with_capacity(1)));
@@ -297,11 +301,16 @@ pub unsafe extern "C" fn glm_tbl_set(t: *mut GlmTable, index: i64, val: *const u
             return;
         }
         let map = &mut *tbl.sparse_map;
-        if tbl.esize == 8 {
-            let v = *(val as *const u64);
+        if tbl.esize == 16 {
+            // An Any (tagged) cell: the whole 16 bytes ride the map
+            // as one u128 — high 64 = tag, low 64 = payload.
+            let v = *(val as *const u128);
+            map.insert(index, v);
+        } else if tbl.esize == 8 {
+            let v = *(val as *const u64) as u128;
             map.insert(index, v);
         } else {
-            let v = *val as u64;
+            let v = *val as u64 as u128;
             map.insert(index, v);
         }
         return;
@@ -314,10 +323,12 @@ pub unsafe extern "C" fn glm_tbl_set(t: *mut GlmTable, index: i64, val: *const u
     // raw GEP stores stay in-bounds and live against every store the
     // checked path performs, whatever the key computes to at runtime.
     if index > tbl.len.saturating_add(SPARSE_THRESHOLD) {
-        let v = if tbl.esize == 8 {
-            *(val as *const u64)
+        let v = if tbl.esize == 16 {
+            *(val as *const u128)
+        } else if tbl.esize == 8 {
+            *(val as *const u64) as u128
         } else {
-            *val as u64
+            *val as u64 as u128
         };
         unsafe { overflow_map(t).insert(index, v) };
         return;
@@ -329,11 +340,14 @@ pub unsafe extern "C" fn glm_tbl_set(t: *mut GlmTable, index: i64, val: *const u
     }
     unsafe { span_grow(t, index.wrapping_add(1)) };
     let ptr = tbl.data.add(index as usize * tbl.esize);
-    if tbl.esize == 8 {
+    if tbl.esize == 16 {
+        // An Any (tagged) cell: 16 raw bytes, one aligned store.
+        unsafe { ptr.copy_from_nonoverlapping(val, 16) };
+    } else if tbl.esize == 8 {
         let v = *(val as *const u64);
-        ptr.cast::<u64>().write(v);
+        unsafe { ptr.cast::<u64>().write(v) };
     } else {
-        ptr.write(*val);
+        unsafe { ptr.write(*val) };
     }
     // The dense write is the newer value at this index — shadow away
     // an overflow entry an earlier far store left, so the read-side
@@ -366,18 +380,27 @@ pub unsafe extern "C" fn glm_tbl_get(t: *mut GlmTable, index: i64, dst: *mut u8,
     // ---- Sparse: HashMap lookup ----------------------------------------
     if tbl.mode == TableMode::Sparse {
         if index < 0 {
-            std::ptr::write_bytes(dst, 0, tbl.esize);
+            unsafe { std::ptr::write_bytes(dst, 0, tbl.esize) };
             return;
         }
         let map = &mut *tbl.sparse_map;
         if let Some(&v) = map.get(&index) {
-            if tbl.esize == 8 {
-                *(dst as *mut u64) = v;
+            if tbl.esize == 16 {
+                // An Any (tagged) cell: one u128 back into 16 bytes.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        (&v as *const u128).cast::<u8>(),
+                        dst,
+                        16,
+                    );
+                }
+            } else if tbl.esize == 8 {
+                unsafe { *(dst as *mut u64) = v as u64 };
             } else {
-                *dst = (v & 0xff) as u8;
+                unsafe { *dst = (v & 0xff) as u8 };
             }
         } else {
-            std::ptr::write_bytes(dst, 0, tbl.esize);
+            unsafe { std::ptr::write_bytes(dst, 0, tbl.esize) };
         }
         return;
     }
@@ -390,22 +413,28 @@ pub unsafe extern "C" fn glm_tbl_get(t: *mut GlmTable, index: i64, dst: *mut u8,
         && !tbl.sparse_map.is_null()
         && let Some(&v) = unsafe { (&*tbl.sparse_map).get(&index) }
     {
-        if tbl.esize == 8 {
-            *(dst as *mut u64) = v;
+        if tbl.esize == 16 {
+            unsafe {
+                std::ptr::copy_nonoverlapping((&v as *const u128).cast::<u8>(), dst, 16);
+            }
+        } else if tbl.esize == 8 {
+            unsafe { *(dst as *mut u64) = v as u64 };
         } else {
-            *dst = (v & 0xff) as u8;
+            unsafe { *dst = (v & 0xff) as u8 };
         }
         return;
     }
     if index < 0 || index >= tbl.len {
-        std::ptr::write_bytes(dst, 0, tbl.esize);
+        unsafe { std::ptr::write_bytes(dst, 0, tbl.esize) };
         return;
     }
     let ptr = tbl.data.add(index as usize * tbl.esize);
-    if tbl.esize == 8 {
-        *(dst as *mut u64) = ptr.cast::<u64>().read();
+    if tbl.esize == 16 {
+        unsafe { std::ptr::copy_nonoverlapping(ptr, dst, 16) };
+    } else if tbl.esize == 8 {
+        unsafe { *(dst as *mut u64) = ptr.cast::<u64>().read() };
     } else {
-        *dst = ptr.read();
+        unsafe { *dst = ptr.read() };
     }
 }
 
@@ -668,9 +697,13 @@ unsafe fn free_tbl(t: *mut GlmTable, keeps: &[*mut GlmTable]) {
     }
 
     // === Existing flat deallocation path ===
+    // The map's value lane is u128 (Any cells ride it whole) — the
+    // cast MUST match the allocation: a Box of the wrong element type
+    // computes its dealloc layout from the wrong bucket stride and
+    // glibc dies with free(): invalid size on the first sparse table.
     if !tbl.sparse_map.is_null() {
         let _ =
-            unsafe { Box::from_raw(tbl.sparse_map.cast::<std::collections::HashMap<i64, u64>>()) };
+            unsafe { Box::from_raw(tbl.sparse_map.cast::<std::collections::HashMap<i64, u128>>()) };
     }
     if tbl.mode == TableMode::Sparse {
         // Born-sparse tables carry no dense buffer to release.
@@ -807,6 +840,130 @@ pub unsafe extern "C" fn glm_str_intern(s: *const u8, len: usize) -> *const u8 {
     p
 }
 
+// === The Any (dynamic) boundary cell ===
+// An unconstrained `arg` element: a 16-byte tagged cell — payload in
+// the low 64 bits, GLM_ARG_* kind tag in the high 64 — riding the
+// same GlmTable machinery as every other cell (esize 16). The script
+// proved (by checking clean without ever pinning the seed) that it
+// only copies, prints, passes along, or returns its cells, so the tag
+// travels WITH the value and the two dispatched operations (print,
+// equality) read it. The whole word may be copied blind; only these
+// two operations look inside. Zero-fill (a total read of an absent
+// cell) is tag 0 payload 0 — an Integer zero, the total-read
+// convention of every other repr.
+
+/// Pack one tagged cell: tag in the high 64 bits, payload in the low.
+#[inline]
+fn any_pack(tag: i32, payload: u64) -> i128 {
+    ((tag as i64 as i128) << 64) | (payload as i128)
+}
+
+/// The GLM_ARG_* tag of one tagged cell.
+#[inline]
+fn any_tag(v: i128) -> i32 {
+    (v >> 64) as i32
+}
+
+/// The payload bits of one tagged cell.
+#[inline]
+fn any_payload(v: i128) -> u64 {
+    v as u64
+}
+
+/// Print one tagged cell with its own kind's printer — the dispatch
+/// the backend emits for `print` of an Any operand. Strings print
+/// through the pool pointer the host interned at load.
+#[unsafe(no_mangle)]
+pub extern "C" fn glm_any_print(v: i128) {
+    match any_tag(v) {
+        GLM_ARG_INT => print!("{}", any_payload(v) as i64),
+        GLM_ARG_FLOAT => print!("{}", f64::from_bits(any_payload(v))),
+        GLM_ARG_BOOL => print!("{}", any_payload(v) != 0),
+        GLM_ARG_STRING => {
+            let p = any_payload(v) as *const u8;
+            if !p.is_null() {
+                let bytes = unsafe { cstr_bytes(p) };
+                print!("{}", String::from_utf8_lossy(bytes));
+            }
+        }
+        _ => print!("{}", any_payload(v) as i64),
+    }
+}
+
+/// Equality of two tagged cells: equal iff same kind and equal
+/// payload — strings by pool identity (the intern guarantees one
+/// address per distinct content, so pointer equality IS content
+/// equality here). The answer is 0/1, materialized into an i1 by the
+/// backend's compare emission.
+#[unsafe(no_mangle)]
+pub extern "C" fn glm_any_eq(l: i128, r: i128) -> i32 {
+    i32::from(l == r)
+}
+
+/// One word classified under the declared precedence — pure, no
+/// interning, no side effects. The dev-loop host (whose process holds
+/// TWO runtime instances: the compiler's rlib copy and the .so's
+/// staticlib copy) classifies through this and interns through the
+/// .so's own glm_str_intern, so the boundary's string identity space
+/// and the sidecar trace stay owned by the module's instance.
+pub enum AnyWord {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str,
+}
+
+/// Classify one boundary word under the declared precedence: int,
+/// then float, then bool, then string. `5` classifies Int (documented,
+/// deterministic — a property of the boundary vocabulary, not a guess
+/// about the script); `2.5` Float; `true`/`false` Bool; anything else
+/// String. Every word classifies, so Any never refuses a word. The
+/// ONE grammar both hosts share.
+pub fn classify_word(w: &[u8]) -> AnyWord {
+    if let Ok(s) = std::str::from_utf8(w) {
+        if let Ok(v) = s.parse::<i64>() {
+            return AnyWord::Int(v);
+        }
+        if let Ok(v) = s.parse::<f64>() {
+            return AnyWord::Float(v);
+        }
+        match s {
+            "true" => return AnyWord::Bool(true),
+            "false" => return AnyWord::Bool(false),
+            _ => {}
+        }
+    }
+    AnyWord::Str
+}
+
+/// Pack one tagged cell — the format every consumer of the Any
+/// contract speaks: GLM_ARG_* tag in the high 64 bits, payload in the
+/// low 64. Exported so the compiler's dev-loop host packs cells with
+/// the module's format without linking the interning path.
+#[unsafe(no_mangle)]
+pub extern "C" fn glm_any_pack(tag: i32, payload: u64) -> i128 {
+    any_pack(tag, payload)
+}
+
+/// Parse one boundary word into a tagged cell — the single-instance
+/// form (the exe host's path: classify, then intern through THIS
+/// runtime instance, the only one in the process).
+///
+/// # Safety
+/// `w` any bytes (interned or copied, never stored beyond the call).
+unsafe fn any_of_word(w: &[u8]) -> i128 {
+    match classify_word(w) {
+        AnyWord::Int(v) => any_pack(GLM_ARG_INT, v as u64),
+        AnyWord::Float(v) => any_pack(GLM_ARG_FLOAT, v.to_bits()),
+        AnyWord::Bool(v) => any_pack(GLM_ARG_BOOL, u64::from(v)),
+        AnyWord::Str => {
+            let p = unsafe { glm_str_intern(w.as_ptr(), w.len()) };
+            any_pack(GLM_ARG_STRING, p as u64)
+        }
+    }
+}
+
+
 /// # Safety
 /// `p` NUL-terminated and readable through the terminator.
 unsafe fn cstr_bytes(p: *const u8) -> &'static [u8] {
@@ -834,6 +991,12 @@ pub const GLM_ARG_INT: i32 = 0;
 pub const GLM_ARG_FLOAT: i32 = 1;
 pub const GLM_ARG_BOOL: i32 = 2;
 pub const GLM_ARG_STRING: i32 = 3;
+/// The dynamic boundary cell: an unconstrained `arg` element. The
+/// script only copies, prints, passes along, or returns its cells
+/// (any typed use would have pinned a concrete scalar), so the cells
+/// carry their own tag and the HOST's words pick each cell's kind at
+/// load — the one place dynamics are allowed.
+pub const GLM_ARG_ANY: i32 = 4;
 
 /// The GLM_ARG_* kind of a boundary element type — the one mapping
 /// every consumer of the exported contract speaks (the backend's
@@ -843,12 +1006,13 @@ pub fn arg_kind_of(elem: &crate::GlmElem) -> i32 {
         crate::GlmElem::Float => GLM_ARG_FLOAT,
         crate::GlmElem::Boolean => GLM_ARG_BOOL,
         crate::GlmElem::String => GLM_ARG_STRING,
+        crate::GlmElem::Any => GLM_ARG_ANY,
         crate::GlmElem::Integer => GLM_ARG_INT,
     }
 }
 
 /// The boundary element type a GLM_ARG_* kind names — the inverse of
-/// arg_kind_of. A kind outside the four constants maps to None (the
+/// arg_kind_of. A kind outside the constants maps to None (the
 /// argless module: the script never names `arg`).
 pub fn elem_of_kind(kind: i32) -> Option<crate::GlmElem> {
     match kind {
@@ -856,6 +1020,7 @@ pub fn elem_of_kind(kind: i32) -> Option<crate::GlmElem> {
         GLM_ARG_FLOAT => Some(crate::GlmElem::Float),
         GLM_ARG_BOOL => Some(crate::GlmElem::Boolean),
         GLM_ARG_STRING => Some(crate::GlmElem::String),
+        GLM_ARG_ANY => Some(crate::GlmElem::Any),
         _ => None,
     }
 }
@@ -865,6 +1030,9 @@ fn arg_kind_words(kind: i32) -> &'static str {
         GLM_ARG_FLOAT => "numbers (64-bit floats)",
         GLM_ARG_BOOL => "booleans ('true'/'false')",
         GLM_ARG_STRING => "strings (any word)",
+        // Any: every word parses — the tags differ per cell, chosen by
+        // the declared precedence below.
+        GLM_ARG_ANY => "int, float, bool, or string words",
         _ => "integers (64-bit)",
     }
 }
@@ -874,12 +1042,16 @@ fn arg_kind_table(kind: i32) -> &'static str {
         GLM_ARG_FLOAT => "Table<Float>",
         GLM_ARG_BOOL => "Table<Boolean>",
         GLM_ARG_STRING => "Table<String>",
+        GLM_ARG_ANY => "Table<Any>",
         _ => "Table<Integer>",
     }
 }
 
 /// Parse and store one boundary word per the pinned kind. The value's
-/// address is a local — glm_tbl_set copies the bytes immediately.
+/// address is a local — glm_tbl_set copies the bytes immediately. The
+/// ANY kind parses every word into a tagged cell (the declared
+/// precedence int → float → bool → string, the same grammar the
+/// dev-loop host's parse_word applies).
 ///
 /// # Safety
 /// `t` live from glm_tbl_new; `w` any bytes.
@@ -904,6 +1076,10 @@ unsafe fn set_word(t: *mut GlmTable, i: i64, w: &[u8], kind: i32) -> Result<(), 
         GLM_ARG_STRING => {
             let p = unsafe { glm_str_intern(w.as_ptr(), w.len()) };
             unsafe { glm_tbl_set(t, i, (&p as *const *const u8).cast()) };
+        }
+        GLM_ARG_ANY => {
+            let v = unsafe { any_of_word(w) };
+            unsafe { glm_tbl_set(t, i, (&v as *const i128).cast()) };
         }
         _ => return Err(()),
     }
@@ -943,7 +1119,11 @@ pub unsafe extern "C" fn glm_exec_main(
             }
         }
     }
-    let esize = if kind == GLM_ARG_BOOL { 1 } else { 8 };
+    let esize = match kind {
+        GLM_ARG_BOOL => 1,
+        GLM_ARG_ANY => 16,
+        _ => 8,
+    };
     let args = unsafe { glm_tbl_new(esize, 0) };
     for (i, w) in words.iter().enumerate() {
         if unsafe { set_word(args, i as i64, w, kind) }.is_err() {
