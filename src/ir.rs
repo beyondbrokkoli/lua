@@ -1,4 +1,5 @@
 use crate::ast::StaticType;
+use glm_rt::GlmElem;
 use std::marker::PhantomData;
 
 pub type BlockId = usize;
@@ -1060,12 +1061,13 @@ impl BasicBlock {
 #[derive(Debug, Clone)]
 pub struct IrProgram {
     pub blocks: Vec<BasicBlock>,
-    /// The boundary `arg` table's element type as the checker pinned
-    /// it from usage — Integer unless the script demanded Float, Bool,
-    /// or String. The backend reads it for the string registry (String
-    /// cells intern through the module's pool), the host for parsing
-    /// the CLI words.
-    pub boundary_elem: StaticType,
+    /// The boundary contract, as the checker pinned it from usage:
+    /// Some(elem) — the one cell type the script's own code demanded
+    /// (None means the script never names `arg`; an unconstrained
+    /// element is a compile-time error and never reaches here). The
+    /// backend exports it as glm_arg_kind() and embeds it in @main;
+    /// the string registry rides the String case.
+    pub boundary_elem: Option<GlmElem>,
     /// The module's entry point: the shared library exporting
     /// @glm_exec (the dlopen world), or the executable whose @main
     /// calls @glm_exec(null) and frees what returns.

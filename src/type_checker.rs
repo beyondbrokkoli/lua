@@ -1,7 +1,7 @@
 use crate::ast::{BinOp, CtorKey, Expr, StaticType, Stmt, UnOp};
 use crate::shape::{FnDef, ShapeFacts};
 use glm_rt::{signal, trace};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const BARE_LOCAL_MAX: usize = usize::MAX;
 
@@ -41,6 +41,17 @@ pub struct TypeChecker<'a> {
     // know the unknown it owns (None) from one that merely stayed
     // unconstrained.
     arg_elem_id: Option<usize>,
+    // Set the moment a use of the name `arg` resolves to the ROOT
+    // scope's seeded binding (a cell read or a whole-table read): the
+    // seed's read flag. Cleared never — later shadows cannot un-read
+    // the seed.
+    seed_read: bool,
+    // The line of the statement currently being checked (the
+    // diagnostic anchor), and the lines whose value positions carried
+    // a still-unresolved boundary cell — the provenance the ambiguity
+    // error names.
+    current_line: Option<usize>,
+    boundary_use_lines: BTreeSet<usize>,
 }
 
 /// The head unknown of a freshly seeded boundary element — fresh_unknown
@@ -64,6 +75,9 @@ impl<'a> TypeChecker<'a> {
             return_ctxs: vec![ReturnCtx::Boundary],
             inline_stack: Vec::new(),
             arg_elem_id: None,
+            seed_read: false,
+            current_line: None,
+            boundary_use_lines: BTreeSet::new(),
         }
     }
 
@@ -123,13 +137,14 @@ impl<'a> TypeChecker<'a> {
         // across @glm_exec's parameter. The element type starts as a
         // fresh unknown and is pinned by usage — the first position
         // that demands a type (an arithmetic operand, a comparison, a
-        // condition, a store, a constructor entry, an equality)
-        // unifies it, so `arg[0] + 1` makes Integer cells and
-        // `arg[0] == "x"` String cells. An unconstrained element
-        // stays Integer, the one cell type the host passed before
-        // usage inference existed. Seeded, not declared: an explicit
-        // `local arg` shadows it (root scope) — the seed unknown then
-        // never unifies and defaults to Integer.
+        // condition, an equality, a table key) unifies it, so
+        // `arg[0] + 1` makes Integer cells and `arg[0] == "x"` String
+        // cells. An element nothing ever constrains is a COMPILE-TIME
+        // ERROR, not a default: the script defines its type, and a
+        // script that only copies or prints its cells has defined
+        // none. Seeded, not declared: an explicit `local arg` shadows
+        // it (root scope) — the seed unknown then never unifies and
+        // the ambiguity error names the shadowed seed.
         let arg_elem = self.fresh_unknown();
         self.arg_elem_id = Some(arg_elem_id(&arg_elem));
         self.scopes[0].insert(
@@ -143,49 +158,47 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Resolve the boundary element to the type the script's own code
-    /// demanded, defaulting an unconstrained (or shadowed) element to
-    /// Integer, and write it where the lowerer and the host read it.
-    /// The bind lands in the substitution maps, so every scope value,
-    /// bare-local type, and fn signature still carrying the unknown
-    /// resolves through it — the lowerer then never sees an unknown
-    /// behind `arg`. A Table demand is rejected: boundary cells hold
-    /// scalars the host parses off the command line, never tables.
+    /// demanded and write it where the lowerer, the backend, and the
+    /// hosts read it. An element nothing pinned is the AMBIGUITY: a
+    /// diagnostic naming the lines whose value positions carried the
+    // unconstrained cell — the script must demand a type (use the
+    // value in arithmetic, a comparison, a condition, an equality, or
+    /// a table key) or it has no boundary contract. A Table demand is
+    /// rejected: boundary cells hold scalars the host parses off the
+    /// command line, never tables.
     fn finalize_boundary_elem(&mut self) {
-        let elem = match self.arg_elem_id {
-            Some(id) => {
-                let resolved = self.resolve_var(&StaticType::Unknown(id));
-                match resolved {
-                    StaticType::Unknown(_) => {
-                        // Follow the chain to its head unknown and bind
-                        // THAT one: a unify against a constructor's
-                        // element unknown may have left the arg unknown
-                        // pointing at it, and both must resolve. The
-                        // bind cannot fail the occurs check — Integer
-                        // contains no unknowns.
-                        if let StaticType::Unknown(head) = resolved {
-                            let _ = self.bind(head, StaticType::Integer);
-                        }
-                        StaticType::Integer
-                    }
-                    StaticType::Table(_) => {
-                        self.shape.diagnostics.push(
-                            "Type Error: the boundary 'arg' table's cells hold scalars — \
-                             a table element cannot be inferred from 'arg[i]' usage"
-                                .to_string(),
-                        );
-                        return;
-                    }
-                    concrete => concrete,
+        let Some(id) = self.arg_elem_id else { return };
+        let elem = match self.resolve_var(&StaticType::Unknown(id)) {
+            // Follow the chain to its head unknown: a unify against a
+            // constructor's element unknown may have left the arg
+            // unknown pointing at it. Two head unknowns exist only
+            // when the chain stayed unresolved.
+            StaticType::Unknown(_) => {
+                // Only a script that truly reads the seed owes a
+                // contract: a shadowing `local arg` (the seed never
+                // read) and a script that never mentions it stay
+                // silent — the host passes null and the boundary
+                // never materializes.
+                if self.seed_read {
+                    signal!(trace::TRACE_FAIL_BOUNDARY_AMBIGUOUS);
+                    self.shape.diagnostics.push(self.ambiguity_error());
                 }
+                return;
             }
-            None => StaticType::Integer,
+            StaticType::Table(_) => {
+                self.shape.diagnostics.push(
+                    "Type Error: the boundary 'arg' table's cells hold scalars — \
+                     a table element cannot be inferred from 'arg[i]' usage"
+                        .to_string(),
+                );
+                return;
+            }
+            concrete => concrete,
         };
-        if elem != StaticType::Integer {
-            signal!(trace::TRACE_BOUNDARY_ELEM_PINNED);
-        }
-        self.shape.boundary_elem = elem.clone();
+        signal!(trace::TRACE_BOUNDARY_ELEM_PINNED);
+        self.shape.boundary_elem = Some(elem);
         // Fn signatures and returns captured the unknown at their call
-        // sites, before the default bind — re-resolve them through the
+        // sites, before the pin bound — re-resolve them through the
         // now-complete substitutions so the lowerer's inline expansion
         // sees the same concrete types every other position does.
         for def in self.shape.fn_defs.values_mut() {
@@ -198,8 +211,41 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The unconstrained-boundary diagnostic: the seed the script
+    /// never demanded a type for, provenance first. Each line named
+    /// read or carried the boundary cell (directly or through a
+    /// parameter) while it was still unresolved — the exact positions
+    /// that must grow a typed use.
+    fn ambiguity_error(&self) -> String {
+        let mut lines = self.boundary_use_lines.iter();
+        let first = lines.next();
+        let sites = match first {
+            Some(&l) => {
+                let mut s = format!(" (line {l}");
+                for &l in lines {
+                    s.push_str(&format!(", line {l}"));
+                }
+                s.push(')');
+                s
+            }
+            None => String::new(),
+        };
+        format!(
+            "Type Error: the boundary 'arg' table's element type is unconstrained{sites} — \
+             its cells are only copied or passed along there; use one in a typed position \
+             (arithmetic, comparison, condition, equality, table key) to pin the cell type"
+        )
+    }
+
     fn check_block(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
+            // The diagnostic anchor: `arg`-carrying positions inside
+            // this statement record this line as their provenance.
+            self.current_line = self
+                .shape
+                .stmt_lines
+                .get(&(stmt as *const Stmt))
+                .copied();
             if let Err(msg) = self.check_stmt(stmt) {
                 signal!(trace::TRACE_GHOST_BAIL_CHECKER);
                 let line = self
@@ -254,9 +300,23 @@ impl<'a> TypeChecker<'a> {
         Ok(())
     }
 
-    fn var_type(&self, name: &str) -> Result<StaticType, String> {
-        for scope in self.scopes.iter().rev() {
+    fn var_type(&mut self, name: &str) -> Result<StaticType, String> {
+        for (depth, scope) in self.scopes.iter().enumerate().rev() {
             if let Some(ty) = scope.get(name) {
+                // The seed's read flag: a use resolving to the ROOT
+                // scope's `arg` binding that still carries the seed's
+                // unknown (the boundary table itself — a shadowing
+                // `local arg` replaced the binding with its own type,
+                // so the head id is the discriminator). Only such a
+                // read gives the script a boundary contract to pin.
+                if depth == 0 && name == "arg"
+                    && let Some(head) = self.arg_elem_id_head()
+                    && let StaticType::Table(inner) = ty
+                    && let StaticType::Unknown(id) = self.resolve_var(inner)
+                    && id == head
+                {
+                    self.seed_read = true;
+                }
                 return Ok(self.resolve_var(ty));
             }
         }
@@ -264,6 +324,18 @@ impl<'a> TypeChecker<'a> {
             "Scope Error: reference to undeclared variable '{}'",
             name
         ))
+    }
+
+    /// The seed unknown's CURRENT head id — the seed may itself have
+    /// been unified onto another unknown (a ctor's element), so the
+    /// head, not the raw seed id, is what a read resolves to.
+    fn arg_elem_id_head(&self) -> Option<usize> {
+        self.arg_elem_id.map(|id| {
+            match self.resolve_var(&StaticType::Unknown(id)) {
+                StaticType::Unknown(head) => head,
+                _ => id,
+            }
+        })
     }
 
     fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
@@ -338,13 +410,7 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::IndexAssign { obj, key, value } => {
                 let (elem, _obj_desc) = self.check_index_base(obj)?;
-                let key_ty = self.check_expr(key)?;
-                if key_ty != StaticType::Integer {
-                    return Err(format!(
-                        "Type Error: table index must be an Integer, got {}",
-                        type_name(&key_ty)
-                    ));
-                }
+                self.check_index_key(key)?;
 
                 let val_ty = self.check_expr(value)?;
 
@@ -460,6 +526,30 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The key position of an index read, a store, or a constructor
+    /// entry: a still-unknown key (a boundary cell, or a value a
+    /// parameter carried from one) is DEMANDED to Integer — `t[arg[0]]`
+    /// means Integer cells — while any other concrete type stays the
+    /// long-standing rejection. A prior conflicting demand already
+    /// resolved the unknown, so the compare names it instead.
+    fn check_index_key(&mut self, key: &Expr) -> Result<(), String> {
+        let key_ty = self.check_expr(key)?;
+        let key_ty = self.resolve_var(&key_ty);
+        let key_ty = if let StaticType::Unknown(id) = key_ty {
+            self.bind(id, StaticType::Integer)?;
+            StaticType::Integer
+        } else {
+            key_ty
+        };
+        if key_ty != StaticType::Integer {
+            return Err(format!(
+                "Type Error: table index must be an Integer, got {}",
+                type_name(&key_ty)
+            ));
+        }
+        Ok(())
+    }
+
     fn check_condition(&mut self, condition: &Expr, kw: &str) -> Result<(), String> {
         let ty = self.check_expr(condition)?;
         // Usage inference: an unknown condition operand (a boundary
@@ -476,6 +566,35 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Result<StaticType, String> {
+        let ty = self.check_expr_inner(expr)?;
+        // Provenance for the ambiguity error: a value position whose
+        // type still carries the unresolved boundary seed names this
+        // line — a cell read (`arg[i]`, or a value a parameter carried
+        // from one) or a whole-table read (`return arg`, `f(arg)`) if
+        // the element is still unknown. A shadowed `local arg` reads
+        // the shadow's own type, never the seed, so it records
+        // nothing. If the pin never comes, these are the sites the
+        // error shows.
+        if self.seed_read && let Some(line) = self.current_line {
+            // The unknown head this position's type carries, if any:
+            // a scalar position's own unknown, or the element unknown
+            // behind a whole-table read.
+            let head = match &ty {
+                StaticType::Unknown(id) => Some(*id),
+                StaticType::Table(inner) => match self.resolve_var(inner) {
+                    StaticType::Unknown(id) => Some(id),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if head.is_some_and(|id| self.is_boundary_chained(&StaticType::Unknown(id))) {
+                self.boundary_use_lines.insert(line);
+            }
+        }
+        Ok(ty)
+    }
+
+    fn check_expr_inner(&mut self, expr: &Expr) -> Result<StaticType, String> {
         match expr {
             Expr::Integer(_) => Ok(StaticType::Integer),
             Expr::Float(_) => Ok(StaticType::Float),
@@ -493,13 +612,7 @@ impl<'a> TypeChecker<'a> {
                 let elem = self.shape.elem_of(expr);
                 for (key, e) in entries {
                     if let CtorKey::Expr(ke) = key {
-                        let key_ty = self.check_expr(ke)?;
-                        if key_ty != StaticType::Integer {
-                            return Err(format!(
-                                "Type Error: table index must be an Integer, got {}",
-                                type_name(&key_ty)
-                            ));
-                        }
+                        self.check_index_key(ke)?;
                     }
                     let ty = self.check_expr(e)?;
                     if matches!(elem, StaticType::Table(_)) && matches!(ty, StaticType::Table(_)) {
@@ -537,13 +650,7 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::Index { obj, key } => {
                 let (elem, _) = self.check_index_base(obj)?;
-                let key_ty = self.check_expr(key)?;
-                if key_ty != StaticType::Integer {
-                    return Err(format!(
-                        "Type Error: table index must be an Integer, got {}",
-                        type_name(&key_ty)
-                    ));
-                }
+                self.check_index_key(key)?;
                 Ok(elem)
             }
             Expr::Identifier(name) => self.var_type(name),

@@ -17,6 +17,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub struct LowerError(pub String);
 
+/// The boundary contract's GlmElem face — what the IR program exports
+/// (glm_arg_kind) and what the hosts parse by.
+pub fn boundary_elem_of(elem: StaticType) -> glm_rt::GlmElem {
+    match elem {
+        StaticType::Float => glm_rt::GlmElem::Float,
+        StaticType::Boolean => glm_rt::GlmElem::Boolean,
+        StaticType::String => glm_rt::GlmElem::String,
+        StaticType::Integer | StaticType::Table(_) | StaticType::Unknown(_) => {
+            glm_rt::GlmElem::Integer
+        }
+    }
+}
+
 fn join_phi_ty(a: &StaticType, b: &StaticType) -> StaticType {
     if a == b {
         return a.clone();
@@ -464,8 +477,10 @@ impl<'a> IrLowerer<'a> {
         // first virtual register, so the script's `arg` identifier
         // reads the host-passed table like any other SSA value. The
         // cell type is the one the script's own usage pinned (the
-        // checker's inference, defaulting to Integer) — the host-side
-        // contract.
+        // checker's inference; the None case never lowers — a script
+        // that never names `arg` never reads the binding, and an
+        // unconstrained element is the checker's ambiguity error) —
+        // the host-side contract.
         let args_reg = self.next_reg();
         self.emit(Instruction::BindArgs {
             target: Reg::new(args_reg),
@@ -474,7 +489,9 @@ impl<'a> IrLowerer<'a> {
             "arg".to_string(),
             Local {
                 reg: AnyReg::Ptr(Reg::new(args_reg)),
-                ty: StaticType::Table(Box::new(self.shape.boundary_elem.clone())),
+                ty: StaticType::Table(Box::new(
+                    self.shape.boundary_elem.clone().unwrap_or(StaticType::Unknown(0)),
+                )),
                 layout: LayoutVerdict::default(),
             },
         );
@@ -515,7 +532,7 @@ impl<'a> IrLowerer<'a> {
         }
         IrProgram {
             blocks: std::mem::take(&mut self.blocks),
-            boundary_elem: self.shape.boundary_elem.clone(),
+            boundary_elem: self.shape.boundary_elem.clone().map(boundary_elem_of),
             entry: crate::ir::EntryKind::Lib,
         }
     }

@@ -621,7 +621,12 @@ impl Analyzer {
 
 impl Recorded {
     fn into_facts(mut self, n: usize) -> ShapeFacts {
-        let mut elems = vec![crate::ast::StaticType::Integer; n];
+        // Role (b) of the old Integer default is gone: the placeholder
+        // is each site's own unknown, not a fake Integer. The loop
+        // below overwrites every site anyway (the ids are dense
+        // 0..n), so this is init noise made honest.
+        let mut elems: Vec<crate::ast::StaticType> =
+            (0..n).map(crate::ast::StaticType::Unknown).collect();
 
         let site_ids: Vec<usize> = self.lattice.sites.values().copied().collect();
         for id in site_ids {
@@ -693,9 +698,11 @@ impl Recorded {
         ShapeFacts {
             sites: self.lattice.sites,
             elems,
-            // The pre-checker default: the checker's usage inference
-            // writes the resolved cell type here after its pass.
-            boundary_elem: crate::ast::StaticType::Integer,
+            // The pre-checker window: None until the checker's usage
+            // inference writes the resolved cell type here (or leaves
+            // None — a script that never names `arg` has no boundary
+            // contract at all).
+            boundary_elem: None,
             layouts: self.layout.verdicts,
             free_sites: self.own.free_sites,
             free_keeps: self.own.free_keeps,

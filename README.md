@@ -39,11 +39,12 @@ ptr glm_exec(ptr args); /* args: GlmTable*, returns GlmTable* or null */
 Inside the script, `arg` names the table the host passed; a top-level
 `return` hands a table (or nothing — null) back to the host and ends
 execution. Only tables cross the boundary; scalars and strings stay
-behind it. `arg` is only materialized when the script names it, not
-using `arg` means that `sys_alloc_count()` must be 0. `arg` is pinned:
-the host owns the header, so it cannot be moved into another binding
-or table (`local t = arg`, `t[1] = arg` are compile errors, as is
-passing `arg` to a function that moves its parameter or returns it
+behind it. `arg` is only materialized when the script reads it (a
+shadowing `local arg` takes the name over and the host passes null);
+not reading `arg` means that `sys_alloc_count()` must be 0. `arg` is
+pinned: the host owns the header, so it cannot be moved into another
+binding or table (`local t = arg`, `t[1] = arg` are compile errors, as
+is passing `arg` to a function that moves its parameter or returns it
 into a move) — read its cells (`arg[i]`) instead; `return arg` is fine.
 
 ### Boundary argument types
@@ -55,18 +56,49 @@ script's code asked for:
 
 | script usage                          | boundary cells     | accepted words     |
 | ------------------------------------- | ------------------ | ------------------ |
-| `arg[0] + 1`, `arg[0] < 5`, `-arg[0]` | `Table<Integer>`   | 64-bit integers    |
+| `arg[0] + 1`, `arg[0] < 5`, `-arg[0]`, `arg[0] + arg[1]` | `Table<Integer>` | 64-bit integers |
 | `arg[0] + 0.5`, `arg[0] / 2`          | `Table<Float>`     | 64-bit floats      |
 | `if arg[0] then`, `not arg[0]`        | `Table<Boolean>`   | `true` / `false`   |
 | `arg[0] == "x"`                       | `Table<String>`    | any word           |
-| nothing but `arg[i]` copies           | `Table<Integer>`   | 64-bit integers    |
+| `t[arg[0]]` (any key position: store, ctor entry, read) | `Table<Integer>` | 64-bit integers |
+| nothing but copies, prints, and passes | **compile error**  | —                  |
 
 One boundary, one cell type — a Float demand after an Int demand is a
 compile error, exactly like inline calls are monomorphic. Cells copied
 into constructors and stores (`local u = {arg[0], 2}`) unify the same
-way, and a boundary read passed into an inline function pins through
-the parameter. A `Table` element cannot be inferred: boundary cells
-hold scalars.
+way, a boundary read passed into an inline function pins through the
+parameter, and the pin survives loops and if/else joins. A `Table`
+element cannot be inferred: boundary cells hold scalars.
+
+**No silent defaults.** An element the script never demands a type for
+is a compile-time error, not a fallback Integer: the script defines its
+type, and a script that only copies or prints its cells has defined
+none.
+
+```
+Type Error: the boundary 'arg' table's element type is unconstrained (line 3) —
+its cells are only copied or passed along there; use one in a typed position
+(arithmetic, comparison, condition, equality, table key) to pin the cell type
+```
+
+The error names every line whose value carried the unresolved cell —
+directly (`print(arg[0])`) or through a parameter (`f(arg[0)]` with a
+printing body). A shadowing `local arg` never reads the boundary, so it
+pins nothing and errors nothing.
+
+**The contract is exported.** Every linked module — the `.so` and the
+`--exe` executable alike — carries:
+
+```c
+i32 glm_arg_kind(void); /* -1 none, 0 int, 1 float, 2 bool, 3 string */
+```
+
+Any host (C, LuaJIT FFI, a Rust runner) queries the module itself for
+how to parse its words instead of guessing; the dev-loop host and the
+executable's embedded host both key off the same answer (the compiler
+resolved them to one parse path). `-1` names an argless module: the
+script never reads `arg`, the host passes null, and extra words are
+nobody's business.
 
 String words intern through the runtime's pool: the module's distinct
 literals are registered at load (the backend emits a string registry
@@ -102,7 +134,8 @@ and the directory is the listing.
 -- ARGS: <words...>          boundary arguments, passed through
                              verbatim and parsed against the case's
                              usage-pinned cell type (integers, floats,
-                             true/false, or words for String tables)
+                             true/false, or words for String tables);
+                             irrelevant for cases that fail to compile
 ```
 
 The bench's EXE section re-links every case with `--exe` and runs

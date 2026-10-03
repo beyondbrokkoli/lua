@@ -82,18 +82,25 @@ impl FnDef {
     }
 }
 
-#[derive(Default)]
+/// No Default: a facts bag is born from the analyzer's explicit
+/// construction (into_facts), and a defaulted `boundary_elem` is the
+/// silent Integer fallback this compiler refuses — the field is an
+/// Option whose None means "no boundary contract", not a hidden type.
+#[derive(Clone)]
 pub struct ShapeFacts {
     pub sites: BTreeMap<*const Expr, usize>,
     pub elems: Vec<StaticType>,
-    /// The boundary `arg` table's element type as the checker resolved
-    /// it from usage (Integer until something pins it: an arithmetic
-    /// operand, a comparison, a condition, a store or constructor
-    /// element, a print — Float/Bool/String otherwise). The lowerer
-    /// seeds the `arg` binding's type from it and the host parses the
-    /// CLI words against it, so both sides of the boundary speak the
-    /// one cell type the script's own code demanded.
-    pub boundary_elem: StaticType,
+    /// The boundary `arg` table's element contract, as the checker
+    /// resolved it from usage: Some(pinned scalar) — the one cell type
+    /// the script's own code demanded (an arithmetic operand, a
+    /// comparison, a condition, an equality, a table key; an
+    /// unconstrained element is a compile-time error, never a
+    /// default) — or None when the script never names `arg` (no
+    /// boundary table exists, the host passes null). The lowerer
+    /// seeds the `arg` binding's type from it, the backend embeds it
+    /// in @main and exports it as glm_arg_kind(), and the hosts parse
+    /// the CLI words against it.
+    pub boundary_elem: Option<StaticType>,
     #[allow(dead_code)]
     pub layouts: Vec<LayoutVerdict>,
     pub free_sites: BTreeSet<*const Stmt>,

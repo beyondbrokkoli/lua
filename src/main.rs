@@ -11,7 +11,7 @@ mod parser;
 mod shape;
 mod type_checker;
 
-use ast::{StaticType, Stmt};
+use ast::Stmt;
 
 // The boundary type, shared by construction: the same #[repr(C)] struct
 // the .so's copy of glm_rt uses, so host and callee speak one ABI.
@@ -31,14 +31,38 @@ type GlmTblFree = unsafe extern "C" fn(t: *mut GlmTable);
 // symbol: the host's words must hold the same addresses the module's
 // literals hold, and the .so's own runtime owns that identity space.
 type GlmStrIntern = unsafe extern "C" fn(s: *const u8, len: usize) -> *const u8;
+// The module's exported boundary contract: the cell type the script's
+// own usage pinned, as one of glm_rt's GLM_ARG_* constants. ANY host
+// (C, LuaJIT FFI, a Rust runner) can query the symbol instead of
+// guessing how to parse its words — this compiler's own dev-loop host
+// does exactly that, keying its parse off the module's own answer.
+type GlmArgKind = unsafe extern "C" fn() -> i32;
 
-/// One boundary word, parsed against the cell type the script's own
-/// usage pinned: the host-side half of the boundary contract.
+/// One boundary word, parsed against the cell type the module itself
+/// exports (glm_arg_kind): the host-side half of the boundary
+/// contract, keyed by the module's own answer.
 enum HostArg {
     Int(i64),
     Float(f64),
     Bool(bool),
     Str(Vec<u8>),
+}
+
+/// The HostArg a word parses to under one GLM_ARG_* kind — the same
+/// grammar the embedded exe host (glm_exec_main's set_word) parses
+/// with, so the two hosts answer identically for the same module.
+fn parse_word(raw: &str, kind: i32) -> Result<HostArg, ()> {
+    match kind {
+        glm_rt::rt::GLM_ARG_INT => raw.parse::<i64>().map(HostArg::Int).map_err(|_| ()),
+        glm_rt::rt::GLM_ARG_FLOAT => raw.parse::<f64>().map(HostArg::Float).map_err(|_| ()),
+        glm_rt::rt::GLM_ARG_BOOL => match raw {
+            "true" => Ok(HostArg::Bool(true)),
+            "false" => Ok(HostArg::Bool(false)),
+            _ => Err(()),
+        },
+        glm_rt::rt::GLM_ARG_STRING => Ok(HostArg::Str(raw.as_bytes().to_vec())),
+        _ => Err(()),
+    }
 }
 
 const RTLD_NOW: i32 = 0x2;
@@ -114,8 +138,10 @@ fn references_arg(stmts: &[Stmt]) -> bool {
 
 /// Load the compiled module, hand it the boundary args table, and take
 /// ownership of what comes back: the exact invocation path a C host,
-/// LuaJIT FFI, or any Rust runner would use.
-unsafe fn run_boundary(host_args: &[HostArg], pass_args: bool) -> Result<(), String> {
+/// LuaJIT FFI, or any Rust runner would use. The words parse against
+/// the module's own exported contract (glm_arg_kind), so this host and
+/// any other host speak the module's ABI, not a compiler-side guess.
+unsafe fn run_boundary(words: &[String]) -> Result<(), String> {
     let path = CString::new("./libglm_out.so").unwrap();
     let dylib = unsafe { dlopen(path.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
     if dylib.is_null() {
@@ -128,21 +154,35 @@ unsafe fn run_boundary(host_args: &[HostArg], pass_args: bool) -> Result<(), Str
     let glm_tbl_get: GlmTblGet = unsafe { resolve_symbol(dylib, b"glm_tbl_get\0")? };
     let glm_tbl_free: GlmTblFree = unsafe { resolve_symbol(dylib, b"glm_tbl_free\0")? };
     let glm_str_intern: GlmStrIntern = unsafe { resolve_symbol(dylib, b"glm_str_intern\0")? };
+    let glm_arg_kind: GlmArgKind = unsafe { resolve_symbol(dylib, b"glm_arg_kind\0")? };
 
     // Build the arguments using the exact same C-ABI memory the script
-    // reads as its `arg` table — the cell type its own usage pinned
-    // (the checker's inference), or null when the script never names
-    // `arg`. The dlopen above already ran the module's .init_array
-    // string registry, so string words intern onto the module's own
-    // literal addresses.
+    // reads as its `arg` table — the cell type the MODULE exports
+    // (glm_arg_kind: the checker's usage inference, embedded by the
+    // backend), or null when the script never names `arg`. The dlopen
+    // above already ran the module's .init_array string registry, so
+    // string words intern onto the module's own literal addresses.
+    let kind = unsafe { glm_arg_kind() };
     let mut args = std::ptr::null_mut::<GlmTable>();
-    if pass_args {
-        let esize = match host_args.first() {
-            Some(HostArg::Bool(_)) => 1,
-            _ => 8,
-        };
-        args = unsafe { glm_tbl_new(esize, 0) };
-        for (i, v) in host_args.iter().enumerate() {
+    if kind != glm_rt::rt::GLM_ARG_NONE {
+        args = unsafe { glm_tbl_new(if kind == glm_rt::rt::GLM_ARG_BOOL { 1 } else { 8 }, 0) };
+        let mut parsed = Vec::with_capacity(words.len());
+        for raw in words {
+            match parse_word(raw, kind) {
+                Ok(v) => parsed.push(v),
+                Err(()) => {
+                    eprintln!(
+                        "glm host error: boundary args must be {}, got '{raw}' — \
+                         the arg table is {}",
+                        arg_kind_words(kind),
+                        arg_kind_table(kind),
+                    );
+                    unsafe { glm_tbl_free(args) };
+                    std::process::exit(1);
+                }
+            }
+        }
+        for (i, v) in parsed.iter().enumerate() {
             match v {
                 HostArg::Int(x) => unsafe {
                     glm_tbl_set(args, i as i64, (x as *const i64).cast::<u8>())
@@ -357,10 +397,9 @@ fn main() {
     // element kind, the exe twin of the dev-loop host. A script that
     // never names `arg` gets the argless form (the boundary table
     // would sit live for a script that cannot touch it).
+    let arg_used = references_arg(&ast);
     if standalone {
-        ir_program.entry = ir::EntryKind::Exe {
-            args: references_arg(&ast),
-        };
+        ir_program.entry = ir::EntryKind::Exe { args: arg_used };
     }
 
     let llvm_ir = match backend::generate_llvm_ir(&ir_program) {
@@ -426,77 +465,35 @@ fn main() {
     }
 
     // Host-side invocation: the extra CLI words cross the boundary as
-    // the `arg` table's cells — only built when the script actually
-    // names `arg`, parsed against the cell type the script's own usage
-    // pinned (the checker's inference; Integer before any usage
-    // demanded more).
-    let pass_args = references_arg(&ast);
-    let mut host_args = Vec::with_capacity(args.len() - 2);
-    if pass_args {
-        let elem = &ir_program.boundary_elem;
-        for raw in &args[2..] {
-            let word = match elem {
-                StaticType::Integer => raw
-                    .parse::<i64>()
-                    .map(HostArg::Int)
-                    .map_err(|_| raw.to_string()),
-                StaticType::Float => raw
-                    .parse::<f64>()
-                    .map(HostArg::Float)
-                    .map_err(|_| raw.to_string()),
-                StaticType::Boolean => parse_bool(raw)
-                    .map(HostArg::Bool)
-                    .ok_or_else(|| raw.clone()),
-                StaticType::String => Ok(HostArg::Str(raw.as_bytes().to_vec())),
-                _ => Err(raw.clone()),
-            };
-            match word {
-                Ok(v) => host_args.push(v),
-                Err(bad) => {
-                    eprintln!(
-                        "glm host error: boundary args must be {}, got '{bad}' — \
-                         the arg table is {}",
-                        elem_words(elem),
-                        elem_table(elem),
-                    );
-                    std::process::exit(1);
-                }
-            }
-        }
-    }
-    if let Err(e) = unsafe { run_boundary(&host_args, pass_args) } {
+    // the `arg` table's cells. The module owns the contract — the
+    // words parse against glm_arg_kind()'s answer (queried at dlopen,
+    // below), so a C or LuaJIT-FFI host linking the same .so parses
+    // exactly like this one. A script that reads its boundary cells
+    // but leaves them unconstrained never reaches here: the checker's
+    // ambiguity error already failed the build.
+    let words: Vec<String> = args[2..].to_vec();
+    if let Err(e) = unsafe { run_boundary(&words) } {
         eprintln!("glm host error: {e}");
         std::process::exit(1);
     }
 }
 
-/// A Boolean word: true/false, case-sensitive — the two spellings the
-/// checker's Boolean cells accept.
-fn parse_bool(raw: &str) -> Option<bool> {
-    match raw {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
-    }
-}
-
-/// The word vocabulary a cell type accepts, for the host's error text.
-fn elem_words(elem: &StaticType) -> &'static str {
-    match elem {
-        StaticType::Integer => "integers (64-bit)",
-        StaticType::Float => "numbers (64-bit floats)",
-        StaticType::Boolean => "booleans ('true'/'false')",
-        StaticType::String => "strings (any word)",
+/// The word vocabulary a GLM_ARG_* kind accepts, for the host's error
+/// text — the same spelling the exe host's messages use.
+fn arg_kind_words(kind: i32) -> &'static str {
+    match kind {
+        glm_rt::rt::GLM_ARG_FLOAT => "numbers (64-bit floats)",
+        glm_rt::rt::GLM_ARG_BOOL => "booleans ('true'/'false')",
+        glm_rt::rt::GLM_ARG_STRING => "strings (any word)",
         _ => "integers (64-bit)",
     }
 }
 
-fn elem_table(elem: &StaticType) -> String {
-    match elem {
-        StaticType::Integer => "Table<Integer>".to_string(),
-        StaticType::Float => "Table<Float>".to_string(),
-        StaticType::Boolean => "Table<Boolean>".to_string(),
-        StaticType::String => "Table<String>".to_string(),
-        _ => "Table<Integer>".to_string(),
+fn arg_kind_table(kind: i32) -> &'static str {
+    match kind {
+        glm_rt::rt::GLM_ARG_FLOAT => "Table<Float>",
+        glm_rt::rt::GLM_ARG_BOOL => "Table<Boolean>",
+        glm_rt::rt::GLM_ARG_STRING => "Table<String>",
+        _ => "Table<Integer>",
     }
 }

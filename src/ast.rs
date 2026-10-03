@@ -1,9 +1,10 @@
-// The boundary-era compatibility default: an unconstrained `arg`
-// element is Integer, the one cell type the host passed before usage
-// inference existed. ShapeFacts::default rides this for boundary_elem.
-#[derive(Debug, Clone, PartialEq, Default)]
+// No Default: an Integer-looking placeholder is exactly the silent
+// fallback this compiler refuses. Every position that needs a type
+// gets one explicitly — the checker's usage inference pins the
+// boundary element or rejects the script, and the analyzer writes
+// each site's element itself.
+#[derive(Debug, Clone, PartialEq)]
 pub enum StaticType {
-    #[default]
     Integer,
     Float,
     Boolean,

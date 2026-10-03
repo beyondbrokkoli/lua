@@ -826,11 +826,39 @@ unsafe fn cstr_bytes(p: *const u8) -> &'static [u8] {
 // carries its own arg contract — no compiler process, no dlopen. The
 // words cross at exec time, through the same glm_tbl_* calls and the
 // same intern pool (the module's literal registry already ran via
-// .init_array before main).
+// .init_array before main). The same constants are the module's
+// exported glm_arg_kind() answer, so ANY host (C, LuaJIT FFI, a Rust
+// runner) queries the same contract the embedded host parses with.
+pub const GLM_ARG_NONE: i32 = -1;
 pub const GLM_ARG_INT: i32 = 0;
 pub const GLM_ARG_FLOAT: i32 = 1;
 pub const GLM_ARG_BOOL: i32 = 2;
 pub const GLM_ARG_STRING: i32 = 3;
+
+/// The GLM_ARG_* kind of a boundary element type — the one mapping
+/// every consumer of the exported contract speaks (the backend's
+/// glm_arg_kind() body, @main's embedded constant, and both hosts).
+pub fn arg_kind_of(elem: &crate::GlmElem) -> i32 {
+    match elem {
+        crate::GlmElem::Float => GLM_ARG_FLOAT,
+        crate::GlmElem::Boolean => GLM_ARG_BOOL,
+        crate::GlmElem::String => GLM_ARG_STRING,
+        crate::GlmElem::Integer => GLM_ARG_INT,
+    }
+}
+
+/// The boundary element type a GLM_ARG_* kind names — the inverse of
+/// arg_kind_of. A kind outside the four constants maps to None (the
+/// argless module: the script never names `arg`).
+pub fn elem_of_kind(kind: i32) -> Option<crate::GlmElem> {
+    match kind {
+        GLM_ARG_INT => Some(crate::GlmElem::Integer),
+        GLM_ARG_FLOAT => Some(crate::GlmElem::Float),
+        GLM_ARG_BOOL => Some(crate::GlmElem::Boolean),
+        GLM_ARG_STRING => Some(crate::GlmElem::String),
+        _ => None,
+    }
+}
 
 fn arg_kind_words(kind: i32) -> &'static str {
     match kind {
@@ -887,7 +915,9 @@ unsafe fn set_word(t: *mut GlmTable, i: i64, w: &[u8], kind: i32) -> Result<(), 
 /// boundary table, call the module's @glm_exec, and free both tables —
 /// the identity check freeing `return arg` exactly once. A word that
 /// fails to parse dies with the same message the dev-loop host prints,
-/// exit code 1.
+/// exit code 1. The NONE kind names the argless form (the script never
+/// names `arg`): no table is built, @glm_exec receives null, and the
+/// extra words are simply not the script's business.
 ///
 /// # Safety
 /// `argv` readable for `argc` NUL-terminated pointers (or null with
@@ -899,6 +929,11 @@ pub unsafe extern "C" fn glm_exec_main(
     kind: i32,
     exec: unsafe extern "C" fn(*mut GlmTable) -> *mut GlmTable,
 ) -> i32 {
+    if kind == GLM_ARG_NONE {
+        let result = exec(std::ptr::null_mut());
+        unsafe { glm_tbl_free(result) };
+        return 0;
+    }
     let mut words: Vec<&[u8]> = Vec::new();
     if !argv.is_null() {
         for i in 1..(argc.max(0) as usize) {

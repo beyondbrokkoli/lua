@@ -37,6 +37,11 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     // process-immortal constants — no runtime allocation, no free —
     // which is why string cells ride the deep-free exemption.
     let mut str_pool: HashMap<&str, String> = HashMap::new();
+    // The pool's first-sight order: the registry array below walks it,
+    // so the emitted IR stays byte-identical across compiles (a
+    // HashMap's iteration order is randomized per process — the lock
+    // protocol needs the deterministic one).
+    let mut str_order: Vec<String> = Vec::new();
     let mut str_idx = 0;
     let mut needs_floor_decl = false;
     let mut needs_div_guard = false;
@@ -111,6 +116,7 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                             // writes a string global.
                             let g = format!("@.str.{}", str_idx);
                             str_idx += 1;
+                            str_order.push(g.clone());
                             globals.push_str(&format!(
                                 "{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"\n",
                                 g,
@@ -353,26 +359,38 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     out.push_str(&code);
     out.push_str("}\n");
 
+    // The exported boundary contract: the pinned cell type as one of
+    // glm_rt's GLM_ARG_* constants, ALWAYS emitted — the .so and the
+    // exe both carry it, so ANY host (C, LuaJIT FFI, a Rust runner)
+    // queries the module itself for how to parse its words instead of
+    // guessing. NONE names the argless module (the script never names
+    // `arg`).
+    let arg_kind = match program.boundary_elem {
+        Some(elem) => glm_rt::rt::arg_kind_of(&elem),
+        None => glm_rt::rt::GLM_ARG_NONE,
+    };
+    out.push_str(&format!(
+        "\ndefine i32 @glm_arg_kind() {{\n\
+         entry:\n\
+           ret i32 {arg_kind}\n\
+         }}\n"
+    ));
+
     // The standalone entry. The argless form: @main calls the
     // boundary with no table and frees what returns — the whole
     // program in an executable, no host, no dlopen. The args form:
     // @main hands argc/argv to the runtime's glm_exec_main with the
-    // compile-time pinned element kind, so the executable carries its
-    // own boundary host — the words cross at exec time, parsed against
+    // compile-time pinned element kind (the same constant
+    // glm_arg_kind returns), so the executable carries its own
+    // boundary host — the words cross at exec time, parsed against
     // the same usage-inferred cell type the dev-loop host uses.
     let mut needs_exec_main_decl = false;
     if let EntryKind::Exe { args } = program.entry {
         if args {
-            let kind = match program.boundary_elem {
-                StaticType::Float => glm_rt::rt::GLM_ARG_FLOAT,
-                StaticType::Boolean => glm_rt::rt::GLM_ARG_BOOL,
-                StaticType::String => glm_rt::rt::GLM_ARG_STRING,
-                _ => glm_rt::rt::GLM_ARG_INT,
-            };
             out.push_str(&format!(
                 "\ndefine i32 @main(i32 %argc, ptr %argv) {{\n\
                  entry:\n\
-                   %rc = call i32 @glm_exec_main(i32 %argc, ptr %argv, i32 {kind}, ptr @glm_exec)\n\
+                   %rc = call i32 @glm_exec_main(i32 %argc, ptr %argv, i32 {arg_kind}, ptr @glm_exec)\n\
                    ret i32 %rc\n\
                  }}\n"
             ));
@@ -401,12 +419,9 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     // own immortal copy (glm_str_intern), keeping the pool semantics
     // one flat identity space across the boundary.
     let mut registry = String::new();
-    if matches!(program.boundary_elem, StaticType::String) && !str_pool.is_empty() {
+    if matches!(program.boundary_elem, Some(glm_rt::GlmElem::String)) && !str_order.is_empty() {
         trace::compiler_trace_signal(trace::TRACE_STRTAB_EMIT);
-        let ptrs: Vec<String> = str_pool
-            .values()
-            .map(|g| format!("ptr {g}"))
-            .collect();
+        let ptrs: Vec<String> = str_order.iter().map(|g| format!("ptr {g}")).collect();
         registry.push_str(&format!(
             "@.glm_strtab = global [{} x ptr] [{}]\n",
             ptrs.len(),
