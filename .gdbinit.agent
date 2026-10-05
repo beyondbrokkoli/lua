@@ -1,0 +1,333 @@
+# /home/halim/lua/.gdbinit.agent — token-minimal GDB config for AI-agent debugging sessions.
+#
+# Load INSTEAD of the human config (never both):
+#   cd ~/lua
+#   rust-gdb -nx -x .gdbinit.agent --args ./target/debug/glm --debug cases/<case>.lua <args...>
+# -nx suppresses ~/.gdbinit AND ./.gdbinit (the human config); rust-gdb's own
+# injected pretty-printer -x still loads. CWD must be ~/lua — the host resolves
+# ./libglm_out.so, out.ll, and the trace plates relative to it.
+#
+# Design contract:
+#   * Stops are fully silent — gdb already echoes `file:line` + the source text
+#     on every breakpoint hit and step, which is the only per-stop context an
+#     agent needs. No borders, no ANSI, no register dashboard, no hook-stop.
+#   * Everything else is on-demand via the dense commands below; each command
+#     prints exactly one line (or one line per cell/frame), no decoration.
+
+# --- non-interactive & output discipline ---
+set debuginfod enabled off
+set pagination off
+set confirm off
+set height 0
+set width 0
+set breakpoint pending on
+set print pretty off
+set print array off
+set print elements 24
+set print repeats unlimited
+set print inferior-events off
+set print demangle on
+set print asm-demangle on
+set unwindonsignal on
+
+# --- rustc sysroot source substitution (same toolchain hash as the human config) ---
+set substitute-path /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452 /usr/lib/rustlib/src/rust
+
+# --- skip rules: dynamic loader, glibc, vdso, Rust std ---
+# File globs keep si/ni out of ld.so/glibc objects; the -rfu regexes match
+# demangled names so `step` never descends into std/core/alloc internals
+# (the .* prefix catches trait impls like <T as core::...>). Issued through
+# python to_string so the 18 "will be skipped" confirmation lines stay off
+# the transcript.
+python
+for _s in [
+    "skip -gfi /lib/**/*.so",
+    "skip -gfi /lib64/**/*.so",
+    "skip -gfi /usr/lib/**/*.so",
+    "skip -gfi /usr/lib64/**/*.so",
+    "skip -rfu .*std::.*",
+    "skip -rfu .*core::.*",
+    "skip -rfu .*alloc::.*",
+    "skip -rfu .*panic_unwind::.*",
+    "skip -gfi /rustc/*",
+    "skip -gfi /usr/lib/rustlib/*",
+    # Kernel/loader/libc faces the agent never wants under its feet.
+    "skip -rfu ^__libc_",
+    "skip -rfu ^_dl_",
+    "skip -rfu ^__vdso",
+    "skip -rfu ^pthread_",
+    "skip -rfu ^malloc$",
+    "skip -rfu ^calloc$",
+    "skip -rfu ^realloc$",
+    "skip -rfu ^free$",
+]:
+    gdb.execute(_s, to_string=True)
+end
+
+# --- cregs: every GP register, one dense line (python: $eflags is a flags
+# struct in modern gdb, so it renders as the set-flag names only) ---
+python
+class _Cregs(gdb.Command):
+    """cregs — all GP registers on one line; efl lists set flags only."""
+
+    def __init__(self):
+        super().__init__("cregs", gdb.COMMAND_NONE)
+
+    def invoke(self, args, from_tty):
+        parts = []
+        for r in "rax rbx rcx rdx rsi rdi rbp rsp r8 r9 r10 r11 r12 r13 r14 r15 rip".split():
+            try:
+                parts.append("%s=0x%x" % (r, int(gdb.parse_and_eval("$" + r)) & 0xFFFFFFFFFFFFFFFF))
+            except Exception:
+                parts.append("%s=?" % r)
+        try:
+            # $eflags is an opaque flags type (no fields, no casts) — parse
+            # the one-line info output: eflags 0x202 [ IF ]
+            out = gdb.execute("info registers eflags", to_string=True).split()
+            if len(out) >= 4 and out[2] == "[":
+                parts.append("efl=%s[%s]" % (out[1], " ".join(out[3:-1])))
+            else:
+                parts.append("efl=%s" % out[1])
+        except Exception:
+            pass
+        print(" ".join(parts))
+
+
+_Cregs()
+end
+
+# --- _cell (internal): decode one GlmTable cell at a known address ---
+# Arg 1: cell address (char*). Arg 2: esize (1 bool / 8 scalar / 16 tagged Any).
+# Arg 3: contains_tables flag (switches the 8-byte view to row pointers).
+define _cell
+  if (unsigned long)$arg1 == 16
+    set $pl = *(unsigned long*)$arg0
+    set $tg = *(long*)((char*)$arg0+8)
+    if $tg == 0
+      printf "int i:%ld u:0x%lx", (long)$pl, $pl
+    else
+      if $tg == 1
+        printf "float u:0x%lx f:%g", $pl, *(double*)((char*)$arg0)
+      else
+        if $tg == 2
+          printf "bool u:0x%lx b:%d", $pl, (int)(*(unsigned char*)$arg0)
+        else
+          if $tg == 3
+            printf "str u:0x%lx s:\"%s\"", $pl, (char*)$pl
+          else
+            printf "tag%ld u:0x%lx", $tg, $pl
+          end
+        end
+      end
+    end
+  else
+    if (unsigned long)$arg1 == 8
+      if (unsigned char)$arg2 != 0
+        printf "row 0x%lx", *(unsigned long*)$arg0
+      else
+        set $v = *(unsigned long*)$arg0
+        printf "i:%ld u:0x%lx f:%g", (long)$v, $v, *(double*)((char*)$arg0)
+      end
+    else
+      printf "b:%u", *(unsigned char*)$arg0
+    end
+  end
+end
+document _cell
+  Internal helper: one decoded cell, no newline. _cell <addr> <esize> <ct>
+end
+
+# --- parg: GlmTable header as one pseudo-JSON line ---
+# GlmTable #[repr(C)]: data+0 len+8 reserve+16 esize+24 mode(u8)+32
+# contains_tables(u8)+33 sparse_map+40. No arg: tries $rdi then $rbx
+# (the boundary pointer at the glm_exec entry face). Inside a Lua frame
+# prefer passing the variable directly: parg arg / parg t.
+define parg
+  if $argc == 1
+    set $t = (char*)$arg0
+  else
+    if $rdi != 0
+      set $t = (char*)$rdi
+    else
+      set $t = (char*)$rbx
+    end
+  end
+  if (unsigned long)$t == 0
+    printf "{tbl:null}\n"
+  else
+    printf "{tbl:%p data:%p len:%ld reserve:%lu esize:%lu mode:", $t, *(void**)$t, *(long*)($t+8), *(unsigned long*)($t+16), *(unsigned long*)($t+24)
+    if *(unsigned char*)($t+32) == 0
+      printf "dense"
+    else
+      printf "sparse"
+    end
+    printf " ct:%u sparse:%p}\n", *(unsigned char*)($t+33), *(void**)($t+40)
+  end
+end
+document parg
+  GlmTable header, one line. Usage: parg [addr|lua-var]
+end
+
+# --- pcells: first N cells decoded, one segment per cell ---
+# Reads the dense buffer directly; a sparse table (or a dense buffer that
+# was never allocated) falls back to calling the .so's own glm_tbl_get,
+# which handles the far-key overflow map. Usage: pcells <tbl> [count]
+# (count defaults to min(len, 4)).
+define pcells
+  if $argc == 0
+    echo usage: pcells <GlmTable*|lua-var> [count]\n
+  else
+    set $t = (char*)$arg0
+    if (unsigned long)$t == 0
+      printf "{tbl:null}\n"
+    else
+      set $n = *(long*)($t+8)
+      if $n > 4
+        set $n = 4
+      end
+      if $argc == 2
+        set $n = (long)$arg1
+      end
+      set $esz = *(unsigned long*)($t+24)
+      set $md = *(unsigned char*)($t+32)
+      set $ct = *(unsigned char*)($t+33)
+      set $data = *(char**)$t
+      printf "cells{tbl:%p esize:%lu mode:", $t, $esz
+      if $md == 0
+        printf "dense"
+      else
+        printf "sparse"
+      end
+      printf " n:%ld} [", $n
+      set $i = 0
+      while $i < $n
+        if $i > 0
+          printf " "
+        end
+        printf "%ld:", $i
+        if $md == 0 && (unsigned long)$data != 0
+          if $esz == 16
+            set $cp = $data + $i*16
+          else
+            if $esz == 8
+              set $cp = $data + $i*8
+            else
+              set $cp = $data + $i
+            end
+          end
+        else
+          if $bufp == 0
+            set $bufp = (char*)((void*(*)(unsigned long))malloc)(16)
+          end
+          call ((void(*)(void*,long,void*,unsigned long))glm_tbl_get)((void*)$t, $i, (void*)$bufp, $esz)
+          set $cp = $bufp
+        end
+        _cell $cp $esz $ct
+        set $i = $i + 1
+      end
+      printf "]\n"
+    end
+  end
+end
+document pcells
+  Decoded cell dump, one line per cell. Usage: pcells <GlmTable*|lua-var> [count]
+end
+
+# --- xq: one tagged 128-bit Any cell, one line ---
+define xq
+  if $argc == 0
+    echo usage: xq <addr of 16-byte cell>\n
+  else
+    _cell (char*)$arg0 16 0
+    echo \n
+  end
+end
+document xq
+  Decode one 16-byte tagged cell (payload+GLM_ARG tag). Usage: xq <addr>
+end
+
+# --- pkind: the module's exported boundary contract ---
+define pkind
+  set $k = ((int(*)(void))glm_arg_kind)()
+  printf "glm_arg_kind=%d (-1 none, 0 int, 1 float, 2 bool, 3 string, 4 any)\n", $k
+end
+document pkind
+  Query glm_arg_kind() from the loaded module. Requires the .so/exe symbols.
+end
+
+# --- blua: run straight into the script boundary ---
+define blua
+  b glm_exec
+  run
+end
+document blua
+  Pending breakpoint on @glm_exec, then run (the dlopen face lands there).
+end
+
+python
+import gdb, os, re
+
+
+class Here(gdb.Command):
+    """here — current position as one line: basename:line: source text."""
+
+    def __init__(self):
+        super().__init__("here", gdb.COMMAND_STACK)
+
+    def invoke(self, args, from_tty):
+        try:
+            f = gdb.selected_frame()
+            sal = f.find_sal()
+            if not sal or not sal.symtab or sal.line == 0:
+                print("here: no source at %s" % (f.pc(),))
+                return
+            base = os.path.basename(sal.symtab.filename)
+            text = ""
+            try:
+                path = sal.symtab.fullname() or sal.symtab.filename
+                with open(path, "r", errors="replace") as fh:
+                    lines = fh.read().splitlines()
+                if sal.line - 1 < len(lines):
+                    text = lines[sal.line - 1].strip()
+            except Exception:
+                pass
+            print("%s:%d: %s" % (base, sal.line, text))
+        except Exception as e:
+            print("here: %s" % e)
+
+
+Here()
+
+
+_SKIP = re.compile(r"std::|core::|alloc::|panic_unwind|__libc|_dl_|__vdso|rust_begin_unwind")
+
+
+class Cbt(gdb.Command):
+    """cbt [N] — compact backtrace; std/core/alloc/loader frames elided.
+    Frame numbers stay gdb-native (usable with `frame N`)."""
+
+    def __init__(self):
+        super().__init__("cbt", gdb.COMMAND_STACK)
+
+    def invoke(self, args, from_tty):
+        argv = args.split()
+        limit = int(argv[0]) if argv and argv[0].isdigit() else 12
+        f = gdb.newest_frame()
+        i = 0
+        while f is not None and i < limit:
+            name = f.name() or "??"
+            if not _SKIP.search(name):
+                loc = ""
+                try:
+                    sal = f.find_sal()
+                    if sal and sal.symtab and sal.line:
+                        loc = " %s:%d" % (os.path.basename(sal.symtab.filename), sal.line)
+                except Exception:
+                    pass
+                print("#%d %s%s" % (i, name, loc))
+            f = f.older()
+            i += 1
+
+
+Cbt()
+end

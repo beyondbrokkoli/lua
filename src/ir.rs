@@ -188,6 +188,20 @@ pub enum AnyReg {
 }
 
 impl AnyReg {
+    /// The repr kind a debug bind reports: the LLVM type and
+    /// !DIBasicType the backend describes the register with. Byte
+    /// registers never carry a named local (Unknown locals read as
+    /// Ptr), so the Byte face reports as Ptr.
+    pub fn kind(&self) -> RegKind {
+        match self {
+            AnyReg::Int(_) => RegKind::Int,
+            AnyReg::Float(_) => RegKind::Float,
+            AnyReg::Bool(_) => RegKind::Bool,
+            AnyReg::Str(_) | AnyReg::Ptr(_) | AnyReg::Byte(_) => RegKind::Ptr,
+            AnyReg::Any(_) => RegKind::Any,
+        }
+    }
+
     pub fn id(&self) -> RegId {
         match self {
             AnyReg::Int(r) => r.id,
@@ -1187,11 +1201,45 @@ impl Instruction {
     }
 }
 
+/// A source position carried from the parser through lowering into
+/// the backend's !DILocation nodes — 1-based line and column, the
+/// columns the parser reads straight off its token byte offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SourceLoc {
+    pub line: u32,
+    pub col: u32,
+}
+
+/// A variable-value binding the debugger should see: the backend
+/// lowers it to an llvm.dbg.value call placed after instruction
+/// `after` of the same block, describing `reg` under `name` with the
+/// !DIBasicType `kind` picks. SSA rebinding emits one bind per
+/// rebinding, so the debugger's view moves with the script's.
+#[derive(Debug, Clone)]
+pub struct DbgBind {
+    pub after: usize,
+    pub name: String,
+    pub reg: RegId,
+    pub kind: RegKind,
+    pub loc: Option<SourceLoc>,
+    /// The boundary parameter's face: a formal parameter of @glm_exec
+    /// (its 1-based index) rather than a script local.
+    pub param: Option<u32>,
+}
+
 #[derive(Debug, Clone)]
 pub struct BasicBlock {
     pub id: BlockId,
     pub instrs: Vec<Instruction>,
+    /// Parallel to instrs: the source position each instruction
+    /// lowered from (None for synthesized ones — the boundary bind,
+    /// the post-statement free batches' tail).
+    pub locs: Vec<Option<SourceLoc>>,
     pub terminator: Option<Terminator>,
+    /// Where the terminator's branch/return lowered from.
+    pub term_loc: Option<SourceLoc>,
+    /// Variable bindings the backend turns into llvm.dbg.value calls.
+    pub dbg_values: Vec<DbgBind>,
 }
 
 impl BasicBlock {
@@ -1199,7 +1247,10 @@ impl BasicBlock {
         Self {
             id,
             instrs: Vec::new(),
+            locs: Vec::new(),
             terminator: None,
+            term_loc: None,
+            dbg_values: Vec::new(),
         }
     }
 }
@@ -1218,6 +1269,10 @@ pub struct IrProgram {
     /// @glm_exec (the dlopen world), or the executable whose @main
     /// calls @glm_exec(null) and frees what returns.
     pub entry: EntryKind,
+    /// The absolute path of the script that lowered here — the file
+    /// and directory the backend's !DIFile names, so a debugger
+    /// resolves the source regardless of its own working directory.
+    pub source_file: std::path::PathBuf,
 }
 
 /// How the linked artifact enters the program.

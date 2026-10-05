@@ -40,8 +40,10 @@ pub struct Parser<'a> {
     // Pre-order line sequences. stmt_line_seq is indexed by the
     // statement pre-order of analysis::build_stmt_lines; ctor_line_seq
     // by site id (analysis::number_sites assigns ids in the same
-    // pre-order as `{` tokens appear in the source).
+    // pre-order as `{` tokens appear in the source). stmt_col_seq runs
+    // parallel to stmt_line_seq — the debug-info columns.
     pub stmt_line_seq: Vec<usize>,
+    pub stmt_col_seq: Vec<usize>,
     pub ctor_line_seq: Vec<usize>,
 }
 
@@ -61,12 +63,26 @@ impl<'a> Parser<'a> {
                 .map(|(i, _)| i)
                 .collect(),
             stmt_line_seq: Vec::new(),
+            stmt_col_seq: Vec::new(),
             ctor_line_seq: Vec::new(),
         }
     }
 
     fn line_of(&self, off: usize) -> usize {
         1 + self.newlines.partition_point(|&n| n < off)
+    }
+
+    /// The 1-based column of `off`: the bytes since its line's start
+    /// (the last newline, or the source head for line 1).
+    fn col_of(&self, off: usize) -> usize {
+        match self
+            .line_of(off)
+            .checked_sub(2)
+            .and_then(|i| self.newlines.get(i))
+        {
+            Some(&nl) => off - nl,
+            None => off + 1,
+        }
     }
 
     /// The line a parse error is reported at: the upcoming token's line
@@ -108,6 +124,7 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         let off = self.tokens.peek_off().unwrap_or(self.tokens.last_off);
         self.stmt_line_seq.push(self.line_of(off));
+        self.stmt_col_seq.push(self.col_of(off));
         self.parse_stmt_inner()
     }
 
@@ -291,6 +308,7 @@ impl<'a> Parser<'a> {
     fn parse_elseif_chain(&mut self) -> Result<Stmt, ParseError> {
         let off = self.tokens.peek_off().unwrap_or(self.tokens.last_off);
         self.stmt_line_seq.push(self.line_of(off));
+        self.stmt_col_seq.push(self.col_of(off));
         self.expect(Token::ElseIf)?;
         let condition = self.parse_expr()?;
         self.expect(Token::Then)?;

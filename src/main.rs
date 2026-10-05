@@ -375,16 +375,33 @@ fn main() {
     }));
 
     let args: Vec<String> = std::env::args().collect();
+    // Leading flags, in any order: --exe links a standalone executable
+    // (see below), --debug builds the module for source-level stepping
+    // (-O0, frame pointers, no inlining) instead of the release face.
+    let mut standalone = false;
+    let mut debug = false;
+    let mut idx = 1;
+    while let Some(flag) = args.get(idx).map(String::as_str) {
+        match flag {
+            "--exe" => {
+                standalone = true;
+                idx += 1;
+            }
+            "--debug" => {
+                debug = true;
+                idx += 1;
+            }
+            _ => break,
+        }
+    }
     // The standalone face: `glm --exe <file.lua>` links a native
     // executable instead of the .so and never enters the boundary —
     // the program runs as its own process with no host, so it carries
     // no boundary table.
-    let standalone = args.len() >= 2 && args[1] == "--exe";
-    let offset = usize::from(standalone);
-    if args.len() < 2 + offset {
-        panic!("Usage: glm [--exe] <file.lua> [args...]");
+    if args.len() <= idx {
+        panic!("Usage: glm [--exe] [--debug] <file.lua> [args...]");
     }
-    let source_path = &args[1 + offset];
+    let source_path = &args[idx];
     let source = std::fs::read_to_string(source_path).expect("Failed to read source");
 
     let mut tokens = Vec::new();
@@ -417,7 +434,12 @@ fn main() {
         fail_build(&front_diagnostics);
     }
 
-    let ctx = analysis::build_context(&ast, &parser.stmt_line_seq, parser.ctor_line_seq.clone());
+    let ctx = analysis::build_context(
+        &ast,
+        &parser.stmt_line_seq,
+        &parser.stmt_col_seq,
+        parser.ctor_line_seq.clone(),
+    );
 
     let mut shape = shape::analyze(&ctx);
 
@@ -432,12 +454,18 @@ fn main() {
         fail_build(&shape.diagnostics);
     }
 
-    let mut ir_lowerer = lowerer::IrLowerer::new(&shape);
+    let mut ir_lowerer = lowerer::IrLowerer::new(&shape, ctx.stmt_locs);
     let mut ir_program = ir_lowerer.lower_program(&ast);
 
     if !ir_lowerer.diagnostics.is_empty() {
         fail_build(&ir_lowerer.diagnostics);
     }
+
+    // The debug-info file record: canonicalized so the !DIFile names
+    // absolute paths and a debugger resolves the .lua from any working
+    // directory it attached in.
+    ir_program.source_file =
+        std::fs::canonicalize(source_path).unwrap_or_else(|_| source_path.into());
 
     // The standalone entry: an executable enters through @main. A
     // script naming `arg` gets the args form — @main(argc, argv)
@@ -470,16 +498,23 @@ fn main() {
     // The linker bypass: no @main, no executable — the module is
     // linked as a shared library whose one export is @glm_exec.
     // out.ll carries no triple; the runtime staticlib's embedded triple
-    // sets it at link, which clang would flag on every compile.
+    // sets it at link, which clang would flag on every compile. Debug
+    // builds keep the statements in their source order at -O0 with
+    // frame pointers and no inlining, so gdb steps line by line and
+    // unwinds through @glm_exec; release keeps -O3.
     let (link_output, link_kind) = if standalone {
         ("glm_out", "executable")
     } else {
         ("libglm_out.so", "Shared library")
     };
     let mut link = std::process::Command::new("clang");
-    link.arg("-O3")
+    link.arg(if debug { "-O0" } else { "-O3" })
         .arg("-Wno-override-module")
-        .arg("-fuse-ld=lld");
+        .arg("-fuse-ld=lld")
+        .arg("-g");
+    if debug {
+        link.arg("-fno-omit-frame-pointer").arg("-fno-inline");
+    }
     if !standalone {
         link.arg("-shared").arg("-fPIC");
     }
@@ -514,7 +549,7 @@ fn main() {
     // exactly like this one. A script that reads its boundary cells
     // but leaves them unconstrained never reaches here: the checker's
     // ambiguity error already failed the build.
-    let words: Vec<String> = args[2..].to_vec();
+    let words: Vec<String> = args[idx + 1..].to_vec();
     if let Err(e) = unsafe { run_boundary(&words) } {
         eprintln!("glm host error: {e}");
         std::process::exit(1);

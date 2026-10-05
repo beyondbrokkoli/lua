@@ -1,11 +1,13 @@
 use crate::ast::StaticType;
 use crate::ir::{
-    BlockId, Bool, CellGet, CellSet, CellSetFast, CmpRegs, EntryKind, Instruction, Int, IrProgram,
-    MoveRegs, NumRegs, NumRegsRhs, PhiRegs, Ptr, Reg, Repr, Terminator, UnaryNum,
+    BlockId, Bool, CellGet, CellSet, CellSetFast, CmpRegs, DbgBind, EntryKind, Instruction, Int,
+    IrProgram, MoveRegs, NumRegs, NumRegsRhs, PhiRegs, Ptr, Reg, RegKind, Repr, SourceLoc,
+    Terminator, UnaryNum,
 };
 use crate::shape::LayoutVerdict;
 use glm_rt::trace;
 use std::collections::HashMap;
+use std::path::Path;
 
 fn elem_size(ty: &StaticType) -> u32 {
     match ty {
@@ -29,8 +31,174 @@ fn llvm_bytes(bytes: &[u8]) -> String {
     out
 }
 
+// The debug-info node ids. !0..!2 stay reserved for the table-header
+// alias-scope nodes the set_fast expansions reference by literal
+// number; the numbered metadata space tolerates gaps, so the debug
+// nodes start above the reservation whether or not a table was built.
+const DI_FILE: usize = 3;
+const DI_CU: usize = 4;
+const DI_SP: usize = 5;
+const DI_FN_TY: usize = 6;
+const DI_PTR_TY: usize = 7;
+const DI_I64_TY: usize = 8;
+const DI_F64_TY: usize = 9;
+const DI_BOOL_TY: usize = 10;
+const DI_ANY_TY: usize = 11;
+const DI_FLAGS: usize = 12; // ..=14: Dwarf Version, Debug Info Version, PIC Level
+const DI_VAR_BASE: usize = 15;
+
+/// The module's debug-info builder: fixed nodes for the compile unit,
+/// the @glm_exec subprogram, and the value types, then !DILocation and
+/// !DILocalVariable nodes interned in first-sight order — the same
+/// determinism discipline as the string pool, so two compiles of one
+/// script stay byte-identical.
+struct DebugMeta {
+    /// "!N = ..." definitions, in id order.
+    defs: String,
+    next: usize,
+    locs: HashMap<(u32, u32), usize>,
+    vars: HashMap<String, usize>,
+}
+
+impl DebugMeta {
+    /// None when the program carries no source path — no file to name,
+    /// no debug info (the host canonicalizes the path before the
+    /// backend runs, so this never fires in the real pipeline).
+    fn new(source: &Path) -> Option<Self> {
+        let file_name = source.file_name()?.to_string_lossy().into_owned();
+        let dir = source
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_string_lossy()
+            .into_owned();
+        let mut defs = String::new();
+        defs.push_str(&format!(
+            "!{DI_FILE} = !DIFile(filename: \"{}\", directory: \"{}\")\n",
+            llvm_bytes(file_name.as_bytes()),
+            llvm_bytes(dir.as_bytes())
+        ));
+        // The compile unit speaks C (DW_LANG_C99 — the widest debugger
+        // support; no DWARF language code exists for Lua) with full
+        // emission so the variable binds survive into DWARF.
+        defs.push_str(&format!(
+            "!{DI_CU} = distinct !DICompileUnit(language: DW_LANG_C99, file: !{DI_FILE}, \
+             producer: \"glm\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, \
+             enums: !{{}})\n"
+        ));
+        defs.push_str(&format!(
+            "!{DI_SP} = distinct !DISubprogram(name: \"glm_exec\", linkageName: \"glm_exec\", \
+             scope: !{DI_FILE}, file: !{DI_FILE}, line: 1, type: !{DI_FN_TY}, scopeLine: 1, \
+             spFlags: DISPFlagDefinition, unit: !{DI_CU})\n"
+        ));
+        defs.push_str(&format!(
+            "!{DI_FN_TY} = !DISubroutineType(types: !{{null, !{DI_PTR_TY}, !{DI_PTR_TY}}})\n\
+             !{DI_PTR_TY} = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: null, size: 64)\n\
+             !{DI_I64_TY} = !DIBasicType(name: \"i64\", size: 64, encoding: DW_ATE_signed)\n\
+             !{DI_F64_TY} = !DIBasicType(name: \"f64\", size: 64, encoding: DW_ATE_float)\n\
+             !{DI_BOOL_TY} = !DIBasicType(name: \"bool\", size: 8, encoding: DW_ATE_boolean)\n\
+             !{DI_ANY_TY} = !DIBasicType(name: \"any\", size: 128, encoding: DW_ATE_unsigned)\n"
+        ));
+        defs.push_str(&format!(
+            "!{DI_FLAGS} = !{{i32 2, !\"Dwarf Version\", i32 4}}\n\
+             !{} = !{{i32 2, !\"Debug Info Version\", i32 3}}\n\
+             !{} = !{{i32 2, !\"PIC Level\", i32 2}}\n",
+            DI_FLAGS + 1,
+            DI_FLAGS + 2
+        ));
+        Some(Self {
+            defs,
+            next: DI_VAR_BASE,
+            locs: HashMap::new(),
+            vars: HashMap::new(),
+        })
+    }
+
+    fn loc_node(&mut self, loc: SourceLoc) -> usize {
+        let key = (loc.line, loc.col);
+        if let Some(&id) = self.locs.get(&key) {
+            return id;
+        }
+        let id = self.next;
+        self.next += 1;
+        self.defs.push_str(&format!(
+            "!{id} = distinct !DILocation(line: {}, column: {}, scope: !{DI_SP})\n",
+            loc.line, loc.col
+        ));
+        self.locs.insert(key, id);
+        id
+    }
+
+    fn var_node(&mut self, bind: &DbgBind) -> usize {
+        if let Some(&id) = self.vars.get(&bind.name) {
+            return id;
+        }
+        let id = self.next;
+        self.next += 1;
+        let ty = match bind.kind {
+            RegKind::Int => DI_I64_TY,
+            RegKind::Float => DI_F64_TY,
+            RegKind::Bool => DI_BOOL_TY,
+            RegKind::Any => DI_ANY_TY,
+            RegKind::Ptr => DI_PTR_TY,
+        };
+        let arg = bind
+            .param
+            .map(|n| format!("arg: {n}, "))
+            .unwrap_or_default();
+        let line = bind.loc.map(|l| l.line).unwrap_or(0);
+        self.defs.push_str(&format!(
+            "!{id} = !DILocalVariable(name: \"{}\", {arg}scope: !{DI_SP}, file: !{DI_FILE}, \
+             line: {line}, type: !{ty})\n",
+            llvm_bytes(bind.name.as_bytes())
+        ));
+        self.vars.insert(bind.name.clone(), id);
+        id
+    }
+
+    fn tail(&self) -> String {
+        format!(
+            "\n!llvm.dbg.cu = !{{!{DI_CU}}}\n\
+             !llvm.module.flags = !{{!{DI_FLAGS}, !{}, !{}}}\n{}",
+            DI_FLAGS + 1,
+            DI_FLAGS + 2,
+            self.defs
+        )
+    }
+}
+
+/// The !DIBasicType id and LLVM type a debug bind's repr reports with.
+fn dbg_ty(kind: RegKind) -> &'static str {
+    match kind {
+        RegKind::Int => "i64",
+        RegKind::Float => "double",
+        RegKind::Bool => "i1",
+        RegKind::Any => "i128",
+        RegKind::Ptr => "ptr",
+    }
+}
+
+/// Append `, !dbg !N` to every instruction line added since `start`:
+/// the backend's instruction lines indent two spaces; block labels and
+/// blank separators stay untouched. The multi-block set_fast
+/// expansions inherit their statement's position wholesale.
+fn attach_dbg(code: &mut String, start: usize, node: usize) {
+    let added = code[start..].to_string();
+    code.truncate(start);
+    for line in added.split_inclusive('\n') {
+        if line.starts_with("  ") && !line.trim().is_empty() {
+            code.push_str(line.trim_end_matches('\n'));
+            code.push_str(&format!(", !dbg !{node}\n"));
+        } else {
+            code.push_str(line);
+        }
+    }
+}
+
 pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     let mut globals = String::new();
+    let mut dbg = DebugMeta::new(&program.source_file);
+    let mut needs_dbg_value_decl = false;
     // The compile-time string pool: literal bytes -> global name. Each
     // distinct literal materializes once; every repeat GEPs the same
     // global, so .rodata holds one copy per distinct literal and all
@@ -102,7 +270,8 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     for block in &program.blocks {
         code.push_str(&format!("\nb{}:\n", block.id));
 
-        for instr in &block.instrs {
+        for (ii, instr) in block.instrs.iter().enumerate() {
+            let start = code.len();
             match instr {
                 Instruction::LoadInt { target, val } => {
                     code.push_str(&format!("  %v{} = add i64 0, {}\n", target.id, val))
@@ -355,8 +524,34 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                     code.push_str("  call void @glm_print_nl()\n");
                 }
             }
+            // Stamp the statement's position on every line the
+            // instruction expanded to, then flush the variable binds
+            // anchored at it (llvm.dbg.value describing a register as
+            // a named local from here on).
+            if let Some(loc) = block.locs.get(ii).copied().flatten()
+                && let Some(d) = &mut dbg
+            {
+                let node = d.loc_node(loc);
+                attach_dbg(&mut code, start, node);
+            }
+            for bind in block.dbg_values.iter().filter(|b| b.after == ii) {
+                let Some(d) = &mut dbg else { continue };
+                needs_dbg_value_decl = true;
+                let var = d.var_node(bind);
+                let loc = bind.loc.unwrap_or(SourceLoc { line: 1, col: 1 });
+                let dbg_loc = d.loc_node(loc);
+                code.push_str(&format!(
+                    "  call void @llvm.dbg.value(metadata {} %v{}, metadata !{}, \
+                     metadata !DIExpression()), !dbg !{}\n",
+                    dbg_ty(bind.kind),
+                    bind.reg,
+                    var,
+                    dbg_loc
+                ));
+            }
         }
 
+        let term_start = code.len();
         match &block.terminator {
             Some(Terminator::Jump(b)) => code.push_str(&format!("  br label %b{}\n", b)),
             Some(Terminator::Branch {
@@ -372,6 +567,12 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
             Some(Terminator::Return(val)) => code.push_str(&format!("  ret ptr %v{}\n", val.id)),
             Some(Terminator::Halt) | None => code.push_str("  ret ptr null\n"),
         }
+        if let Some(loc) = block.term_loc
+            && let Some(d) = &mut dbg
+        {
+            let node = d.loc_node(loc);
+            attach_dbg(&mut code, term_start, node);
+        }
     }
 
     let mut out = String::from(
@@ -381,8 +582,15 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
          declare void @glm_print_string(ptr)\n\
          declare void @glm_print_sep()\n\
          declare void @glm_print_nl()\n\n\
-         define ptr @glm_exec(ptr %args) {\nentry:\n",
+         ",
     );
+    // The subprogram attachment is the debugger's link: the DISubprogram
+    // the whole module's !DILocations scope to IS this function.
+    out.push_str(if dbg.is_some() {
+        "define ptr @glm_exec(ptr %args) !dbg !5 {\nentry:\n"
+    } else {
+        "define ptr @glm_exec(ptr %args) {\nentry:\n"
+    });
     out.push_str(&allocas);
     out.push_str("  br label %b0\n");
     out.push_str(&code);
@@ -506,6 +714,9 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     if needs_any_eq_decl {
         head.push_str("declare i32 @glm_any_eq(i128, i128)\n");
     }
+    if needs_dbg_value_decl {
+        head.push_str("declare void @llvm.dbg.value(metadata, metadata, metadata)\n");
+    }
     if needs_div_guard {
         head.push_str("declare void @glm_div_zero_guard(i64)\n");
     }
@@ -570,9 +781,10 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     } else {
         String::new()
     };
+    let dbg_tail = dbg.map(|d| d.tail()).unwrap_or_default();
     Ok(format!(
-        "{}{}{}{}{}{}",
-        globals, registry, head, anchor, out, md
+        "{}{}{}{}{}{}{}",
+        globals, registry, head, anchor, out, md, dbg_tail
     ))
 }
 

@@ -1,4 +1,5 @@
 use crate::ast::{CtorKey, Expr, Stmt};
+use crate::ir::SourceLoc;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct AnalysisContext<'a> {
@@ -7,6 +8,9 @@ pub struct AnalysisContext<'a> {
     /// Statement pointer -> source line (the diagnostic anchor for the
     /// shape, checker, and lowerer passes).
     pub stmt_lines: BTreeMap<*const Stmt, usize>,
+    /// Statement pointer -> source position (the debug-info anchor the
+    /// lowerer carries into the backend's !DILocations).
+    pub stmt_locs: BTreeMap<*const Stmt, SourceLoc>,
     /// Ctor site id -> source line (parallel to `sites`' id space).
     pub ctor_lines: Vec<usize>,
 }
@@ -14,6 +18,7 @@ pub struct AnalysisContext<'a> {
 pub fn build_context<'a>(
     ast: &'a [Stmt],
     stmt_line_seq: &[usize],
+    stmt_col_seq: &[usize],
     ctor_lines: Vec<usize>,
 ) -> AnalysisContext<'a> {
     let mut sites = BTreeMap::new();
@@ -23,9 +28,22 @@ pub fn build_context<'a>(
         ctor_lines.len(),
         "ctor line sequence out of step with the site walk"
     );
+    assert_eq!(
+        stmt_line_seq.len(),
+        stmt_col_seq.len(),
+        "stmt column sequence out of step with the line sequence"
+    );
     let mut stmt_lines = BTreeMap::new();
+    let mut stmt_locs = BTreeMap::new();
     let mut i = 0;
-    record_stmt_lines(ast, &mut stmt_lines, stmt_line_seq, &mut i);
+    record_stmt_lines(
+        ast,
+        &mut stmt_lines,
+        &mut stmt_locs,
+        stmt_line_seq,
+        stmt_col_seq,
+        &mut i,
+    );
     assert_eq!(
         i,
         stmt_line_seq.len(),
@@ -36,6 +54,7 @@ pub fn build_context<'a>(
         sites,
         ast,
         stmt_lines,
+        stmt_locs,
         ctor_lines,
     }
 }
@@ -47,7 +66,9 @@ pub fn build_context<'a>(
 fn record_stmt_lines(
     stmts: &[Stmt],
     map: &mut BTreeMap<*const Stmt, usize>,
+    locs: &mut BTreeMap<*const Stmt, SourceLoc>,
     seq: &[usize],
+    cols: &[usize],
     i: &mut usize,
 ) {
     for s in stmts {
@@ -55,49 +76,59 @@ fn record_stmt_lines(
             return;
         }
         map.insert(s as *const Stmt, seq[*i]);
+        locs.insert(
+            s as *const Stmt,
+            SourceLoc {
+                line: seq[*i] as u32,
+                col: cols[*i] as u32,
+            },
+        );
         *i += 1;
-        record_stmt_exprs(s, map, seq, i);
+        record_stmt_exprs(s, map, locs, seq, cols, i);
     }
 }
 
 fn record_stmt_exprs(
     stmt: &Stmt,
     map: &mut BTreeMap<*const Stmt, usize>,
+    locs: &mut BTreeMap<*const Stmt, SourceLoc>,
     seq: &[usize],
+    cols: &[usize],
     i: &mut usize,
 ) {
-    let expr = |e: &Expr, map: &mut BTreeMap<*const Stmt, usize>, i: &mut usize| {
-        record_expr_lines(e, map, seq, i)
-    };
+    let expr = |e: &Expr,
+                map: &mut BTreeMap<*const Stmt, usize>,
+                locs: &mut BTreeMap<*const Stmt, SourceLoc>,
+                i: &mut usize| { record_expr_lines(e, map, locs, seq, cols, i) };
     match stmt {
         Stmt::LocalDecl { exprs, .. } | Stmt::Print { exprs } => {
             for e in exprs {
-                expr(e, map, i);
+                expr(e, map, locs, i);
             }
         }
-        Stmt::Assignment { expr: ev, .. } | Stmt::Expr { expr: ev } => expr(ev, map, i),
+        Stmt::Assignment { expr: ev, .. } | Stmt::Expr { expr: ev } => expr(ev, map, locs, i),
         Stmt::IndexAssign { obj, key, value } => {
-            expr(obj, map, i);
-            expr(key, map, i);
-            expr(value, map, i);
+            expr(obj, map, locs, i);
+            expr(key, map, locs, i);
+            expr(value, map, locs, i);
         }
         Stmt::While { condition, body } => {
-            expr(condition, map, i);
-            record_stmt_lines(body, map, seq, i);
+            expr(condition, map, locs, i);
+            record_stmt_lines(body, map, locs, seq, cols, i);
         }
-        Stmt::Do { body } => record_stmt_lines(body, map, seq, i),
+        Stmt::Do { body } => record_stmt_lines(body, map, locs, seq, cols, i),
         Stmt::If {
             condition,
             then_body,
             else_body,
         } => {
-            expr(condition, map, i);
-            record_stmt_lines(then_body, map, seq, i);
-            record_stmt_lines(else_body, map, seq, i);
+            expr(condition, map, locs, i);
+            record_stmt_lines(then_body, map, locs, seq, cols, i);
+            record_stmt_lines(else_body, map, locs, seq, cols, i);
         }
         Stmt::Return { value } => {
             if let Some(e) = value {
-                expr(e, map, i);
+                expr(e, map, locs, i);
             }
         }
     }
@@ -106,32 +137,34 @@ fn record_stmt_exprs(
 fn record_expr_lines(
     e: &Expr,
     map: &mut BTreeMap<*const Stmt, usize>,
+    locs: &mut BTreeMap<*const Stmt, SourceLoc>,
     seq: &[usize],
+    cols: &[usize],
     i: &mut usize,
 ) {
     match e {
-        Expr::Function { body, .. } => record_stmt_lines(body, map, seq, i),
+        Expr::Function { body, .. } => record_stmt_lines(body, map, locs, seq, cols, i),
         Expr::TableCtor(entries) => {
             for (k, v) in entries {
                 if let CtorKey::Expr(ke) = k {
-                    record_expr_lines(ke, map, seq, i);
+                    record_expr_lines(ke, map, locs, seq, cols, i);
                 }
-                record_expr_lines(v, map, seq, i);
+                record_expr_lines(v, map, locs, seq, cols, i);
             }
         }
         Expr::Index { obj, key } => {
-            record_expr_lines(obj, map, seq, i);
-            record_expr_lines(key, map, seq, i);
+            record_expr_lines(obj, map, locs, seq, cols, i);
+            record_expr_lines(key, map, locs, seq, cols, i);
         }
         Expr::BinaryOp { left, right, .. } => {
-            record_expr_lines(left, map, seq, i);
-            record_expr_lines(right, map, seq, i);
+            record_expr_lines(left, map, locs, seq, cols, i);
+            record_expr_lines(right, map, locs, seq, cols, i);
         }
-        Expr::UnaryOp { expr, .. } => record_expr_lines(expr, map, seq, i),
+        Expr::UnaryOp { expr, .. } => record_expr_lines(expr, map, locs, seq, cols, i),
         Expr::Call { callee, args } => {
-            record_expr_lines(callee, map, seq, i);
+            record_expr_lines(callee, map, locs, seq, cols, i);
             for a in args {
-                record_expr_lines(a, map, seq, i);
+                record_expr_lines(a, map, locs, seq, cols, i);
             }
         }
         _ => {}

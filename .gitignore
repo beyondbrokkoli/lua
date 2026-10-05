@@ -5,6 +5,9 @@ __pycache__/
 .glm_trace.bin
 .glm_rt_trace.bin
 libglm_out.so
-/cases
+/cases/*
+!/cases/21_interop_alloc_arg_header.lua
+!/cases/.gitkeep
 /lock
 /diff
+.gdb_history

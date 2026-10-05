@@ -4,8 +4,8 @@ mod bridges;
 
 use crate::ast::{BinOp, CtorKey, Expr, StaticType, Stmt, UnOp};
 use crate::ir::{
-    AnyReg, BasicBlock, BlockId, Bool, Instruction, Int, IrProgram, Ptr, Reg, RegId, RegKind,
-    Terminator, repr_of,
+    AnyReg, BasicBlock, BlockId, Bool, DbgBind, Instruction, Int, IrProgram, Ptr, Reg, RegId,
+    RegKind, SourceLoc, Terminator, repr_of,
 };
 use crate::shape::{ArmFreeEntry, DoExitFree, Keep, LayoutVerdict, ShapeFacts, TagSrc};
 use bridges::{
@@ -98,6 +98,14 @@ pub struct IrLowerer<'a> {
     fills: FillCtxs,
     handles: FreeHandles,
     shape: &'a ShapeFacts,
+    // Statement pointer -> source position: the debug-info anchors the
+    // current statement's emissions carry (the lowerer's own error
+    // paths keep reading shape.stmt_lines).
+    stmt_locs: BTreeMap<*const Stmt, SourceLoc>,
+    // The position every emit()/terminate() stamps until the next
+    // statement lower — None only for synthesized instructions (the
+    // boundary bind, the post-statement free batches' tail).
+    cur_loc: Option<SourceLoc>,
     // Row-housing keeps: a ghost stored into a cell, with
     // the store's value register captured — an SSA register holds the
     // row pointer for the whole function, so origin-side frees skip
@@ -121,7 +129,7 @@ pub struct IrLowerer<'a> {
 }
 
 impl<'a> IrLowerer<'a> {
-    pub fn new(shape: &'a ShapeFacts) -> Self {
+    pub fn new(shape: &'a ShapeFacts, stmt_locs: BTreeMap<*const Stmt, SourceLoc>) -> Self {
         Self {
             blocks: vec![BasicBlock::new(0)],
             diagnostics: Vec::new(),
@@ -132,6 +140,8 @@ impl<'a> IrLowerer<'a> {
                 loop_ctxs: Vec::new(),
             },
             shape,
+            stmt_locs,
+            cur_loc: None,
             handles: FreeHandles {
                 site_regs: BTreeMap::new(),
             },
@@ -157,11 +167,34 @@ impl<'a> IrLowerer<'a> {
     }
 
     fn emit(&mut self, instr: Instruction) {
-        self.blocks[self.current_block].instrs.push(instr);
+        let block = &mut self.blocks[self.current_block];
+        block.locs.push(self.cur_loc);
+        block.instrs.push(instr);
     }
 
     fn terminate(&mut self, term: Terminator) {
-        self.blocks[self.current_block].terminator = Some(term);
+        let block = &mut self.blocks[self.current_block];
+        block.term_loc = self.cur_loc;
+        block.terminator = Some(term);
+    }
+
+    /// A debugger-visible binding: the backend lowers it to an
+    /// llvm.dbg.value anchored at the instruction just emitted, so the
+    /// debugger's view of `name` moves with each rebinding. A bind
+    /// with no instruction to anchor to (nothing emitted yet) is
+    /// skipped — there is no position for it to describe.
+    fn push_dbg_bind(&mut self, name: &str, reg: AnyReg, param: Option<u32>) {
+        let after = self.blocks[self.current_block].instrs.len().checked_sub(1);
+        if let Some(after) = after {
+            self.blocks[self.current_block].dbg_values.push(DbgBind {
+                after,
+                name: name.to_string(),
+                reg: reg.id(),
+                kind: reg.kind(),
+                loc: self.cur_loc,
+                param,
+            });
+        }
     }
 
     fn in_block<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
@@ -408,6 +441,7 @@ impl<'a> IrLowerer<'a> {
     }
 
     fn declare_var(&mut self, name: String, reg: AnyReg, ty: StaticType, layout: LayoutVerdict) {
+        self.push_dbg_bind(&name, reg, None);
         self.scopes
             .last_mut()
             .unwrap()
@@ -426,6 +460,7 @@ impl<'a> IrLowerer<'a> {
                 local.reg = reg;
                 local.ty = ty;
                 local.layout = layout;
+                self.push_dbg_bind(name, reg, None);
                 return Ok(());
             }
         }
@@ -491,6 +526,7 @@ impl<'a> IrLowerer<'a> {
         self.emit(Instruction::BindArgs {
             target: Reg::new(args_reg),
         });
+        self.push_dbg_bind("arg", AnyReg::Ptr(Reg::new(args_reg)), Some(1));
         self.scopes[0].insert(
             "arg".to_string(),
             Local {
@@ -539,6 +575,9 @@ impl<'a> IrLowerer<'a> {
             blocks: std::mem::take(&mut self.blocks),
             boundary_elem: self.shape.boundary_elem.clone().map(boundary_elem_of),
             entry: crate::ir::EntryKind::Lib,
+            // The host stamps the canonical script path before the
+            // backend runs — the lowerer never sees the file system.
+            source_file: std::path::PathBuf::new(),
         }
     }
 
@@ -647,6 +686,10 @@ impl<'a> IrLowerer<'a> {
     }
 
     fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), LowerError> {
+        // Everything this statement lowers — its expressions, the
+        // synthesized free batches, its branch — carries its position
+        // until the next statement lower.
+        self.cur_loc = self.stmt_locs.get(&(stmt as *const Stmt)).copied();
         match stmt {
             Stmt::LocalDecl { names, exprs } => {
                 let mut bindings = Vec::with_capacity(exprs.len());
@@ -1612,7 +1655,9 @@ impl<'a> IrLowerer<'a> {
                     for (i, &b) in edge_blocks.iter().enumerate() {
                         let class = classes.get(i).copied().unwrap_or(false);
                         let r = self.next_reg();
-                        self.blocks[b].instrs.push(Instruction::LoadBool {
+                        let block = &mut self.blocks[b];
+                        block.locs.push(self.cur_loc);
+                        block.instrs.push(Instruction::LoadBool {
                             target: Reg::new(r),
                             val: class,
                         });
