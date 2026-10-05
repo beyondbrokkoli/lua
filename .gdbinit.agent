@@ -99,7 +99,12 @@ end
 # --- _cell (internal): decode one GlmTable cell at a known address ---
 # Arg 1: cell address (char*). Arg 2: esize (1 bool / 8 scalar / 16 tagged Any).
 # Arg 3: contains_tables flag (switches the 8-byte view to row pointers).
+# Sets language c without restoring: the casts below die in Rust frames
+# ("No symbol 'unsigned'"), and a restoring sandwich here would flip the
+# language back mid-body of the public caller. Public commands (parg /
+# pcells / xq / pkind) wrap themselves and restore; _cell left alone.
 define _cell
+  set language c
   if (unsigned long)$arg1 == 16
     set $pl = *(unsigned long*)$arg0
     set $tg = *(long*)((char*)$arg0+8)
@@ -143,6 +148,10 @@ end
 # (the boundary pointer at the glm_exec entry face). Inside a Lua frame
 # prefer passing the variable directly: parg arg / parg t.
 define parg
+  # Casts parse in the current frame's language: inside rt.rs frames
+  # (DWARF Rust) `(char*)` dies with "unexpected token". Run the body
+  # in C, restore the frame's language at the end. See AGENT.md.
+  set language c
   if $argc == 1
     set $t = (char*)$arg0
   else
@@ -163,6 +172,7 @@ define parg
     end
     printf " ct:%u sparse:%p}\n", *(unsigned char*)($t+33), *(void**)($t+40)
   end
+  set language auto
 end
 document parg
   GlmTable header, one line. Usage: parg [addr|lua-var]
@@ -174,6 +184,14 @@ end
 # which handles the far-key overflow map. Usage: pcells <tbl> [count]
 # (count defaults to min(len, 4)).
 define pcells
+  # Language sandwich (see parg) plus the $bufp init: a convenience
+  # var compared before its first assignment is void, and the
+  # `$bufp == 0` test died with "Invalid type combination in equality
+  # test" — on the dense face the infcall branch never runs, so only
+  # sparse tables ever saw it. The reset costs one 16-byte inferior
+  # malloc per sparse invocation.
+  set language c
+  set $bufp = 0
   if $argc == 0
     echo usage: pcells <GlmTable*|lua-var> [count]\n
   else
@@ -228,6 +246,7 @@ define pcells
       printf "]\n"
     end
   end
+  set language auto
 end
 document pcells
   Decoded cell dump, one line per cell. Usage: pcells <GlmTable*|lua-var> [count]
@@ -235,12 +254,16 @@ end
 
 # --- xq: one tagged 128-bit Any cell, one line ---
 define xq
+  # Language sandwich (see parg): `(unsigned long)` in _cell's casts
+  # is unparseable in Rust frames.
+  set language c
   if $argc == 0
     echo usage: xq <addr of 16-byte cell>\n
   else
     _cell (char*)$arg0 16 0
     echo \n
   end
+  set language auto
 end
 document xq
   Decode one 16-byte tagged cell (payload+GLM_ARG tag). Usage: xq <addr>
@@ -248,8 +271,12 @@ end
 
 # --- pkind: the module's exported boundary contract ---
 define pkind
+  # Language sandwich (see parg): the function-pointer cast dies in
+  # Rust frames.
+  set language c
   set $k = ((int(*)(void))glm_arg_kind)()
   printf "glm_arg_kind=%d (-1 none, 0 int, 1 float, 2 bool, 3 string, 4 any)\n", $k
+  set language auto
 end
 document pkind
   Query glm_arg_kind() from the loaded module. Requires the .so/exe symbols.

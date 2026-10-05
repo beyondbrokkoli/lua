@@ -1,5 +1,5 @@
 #!/usr/bin/env lua
--- reset.lua — RELOCK baselines. Milestones only, never to "fix" drift.
+-- reset.lua — overwrite IR in lock
 dofile("conf.lua")
 
 local function usage()

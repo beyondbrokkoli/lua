@@ -26,7 +26,8 @@ pub enum TableMode {
 ///   data@0:         *mut u8   — the element buffer (moves freely; the header stays)
 ///   len@8:          i64       — the zeroed, addressable span (doubling watermark)
 ///   reserve@16:     usize     — 0 = malloc world; nonzero = PROT_NONE VA reservation
-///   esize@24:       usize     — element size: 8 for int/float/str/table, 1 for bool
+///   esize@24:       usize     — element size: 8 for int/float/str/table,
+///                              1 for bool, 16 for the tagged Any cell
 ///   mode@32:        TableMode — 0 = Dense (flat buffer + overflow map),
 ///                              1 = Sparse (map-only, born at TableNew)
 ///   contains_tbl@33: u8       — 1 = elements include nested tables (deep-free flag)
@@ -155,7 +156,7 @@ fn abort_alloc(bytes: usize) -> ! {
 }
 
 /// # Safety
-/// `esize` is 1 or 8 (the checker-pinned element sizes). `flags` is a
+/// `esize` is 1, 8, or 16 (the checker-pinned element sizes). `flags` is a
 /// packed byte: bit 0 = mode (0=Dense, 1=Sparse), bit 7 =
 /// contains_tables.
 #[unsafe(no_mangle)]
@@ -249,6 +250,210 @@ unsafe fn overflow_map(t: *mut GlmTable) -> &'static mut HashMap<i64, u128> {
     unsafe { &mut *tbl.sparse_map }
 }
 
+// === The cell-repr shell ============================================
+// GlmTable is the exported shell; beneath it, storage is a dense
+// monomorphic CELL STORE whose element repr hangs in through one
+// trait — the "GlmData" seam. Three reprs ride it today: the 1-byte
+// bool, the 8-byte machine word (int/float/str-ptr/table-ptr), and
+// the 16-byte tagged Any word — exactly the monomorphic tables and
+// the Any tables the language has. A future construct (string-keyed
+// tables, a fuller Lua table) does not fork this logic: it hangs in a
+// new repr with ONE impl block here and, when it needs its own
+// exported face, calls the same generic cores (`set_core`/`get_core`).
+// The horizontal extension for the cell dimension collapses to a
+// single point: one impl, one match arm in each extern.
+//
+// The alignment contract lives here, once. Value slots and span cells
+// are 8-aligned (the emitted value slots name align 8; heap cells
+// stride in ESIZE steps off an 8-aligned base), so any repr wider
+// than 8 bytes MUST load and store unaligned. This is the rule whose
+// per-arm violation bred the read_unaligned bug — the duplicated arms
+// are gone; the rule is written once and cannot drift per arm.
+//
+// The fill-loop fast store the IR emits does not pass through these
+// cores at all (its raw in-bounds GEP is sound by the density
+// invariant), so the fast dense path stays exactly what it is: forced
+// by the compiler, opt-in by construction.
+
+mod cell_sealed {
+    /// Sealed on purpose: reprs are added HERE, one deliberate impl at
+    /// a time — never by a drive-by impl elsewhere in the workspace.
+    pub trait Sealed {}
+}
+
+/// One element repr a GlmTable can hold, implemented on the cell's own
+/// value type: `u8` (bool), `u64` (the machine word), `u128` (the
+/// tagged Any word). The methods mirror the three physical movements a
+/// cell makes: out of an emitted value slot (`load_slot`), through the
+/// overflow map's u128 lane (`to_lane`/`from_lane`), and across the
+/// dense span or a caller's dst slot (`store_span`, `load_span`,
+/// `store_dst`).
+pub trait CellRepr: Copy + cell_sealed::Sealed {
+    /// Bytes per cell — the GlmTable esize this repr answers to.
+    const ESIZE: usize;
+
+    /// Read one cell from the emitted value slot (8-aligned; reprs
+    /// wider than 8 bytes read unaligned).
+    ///
+    /// # Safety
+    /// `slot` readable for `ESIZE` bytes.
+    unsafe fn load_slot(slot: *const u8) -> Self;
+
+    /// Widen into the overflow map's u128 lane — small reprs sit in
+    /// the low bits, zero-extended; the Any word rides whole.
+    fn to_lane(self) -> u128;
+
+    /// Narrow from the lane (the exact complement of `to_lane`).
+    fn from_lane(lane: u128) -> Self;
+
+    /// Store one cell into the dense span.
+    ///
+    /// # Safety
+    /// `slot` writable for `ESIZE` bytes and in bounds.
+    unsafe fn store_span(slot: *mut u8, cell: Self);
+
+    /// Read one cell out of the dense span.
+    ///
+    /// # Safety
+    /// `slot` readable for `ESIZE` bytes and in bounds.
+    unsafe fn load_span(slot: *const u8) -> Self;
+
+    /// Store one cell into a caller's dst slot (the get side).
+    ///
+    /// # Safety
+    /// `dst` writable for `ESIZE` bytes.
+    unsafe fn store_dst(cell: Self, dst: *mut u8);
+}
+
+impl cell_sealed::Sealed for u8 {}
+impl cell_sealed::Sealed for u64 {}
+impl cell_sealed::Sealed for u128 {}
+
+impl CellRepr for u8 {
+    const ESIZE: usize = 1;
+    unsafe fn load_slot(slot: *const u8) -> Self {
+        unsafe { *slot }
+    }
+    fn to_lane(self) -> u128 {
+        u128::from(self)
+    }
+    fn from_lane(lane: u128) -> Self {
+        (lane & 0xff) as u8
+    }
+    unsafe fn store_span(slot: *mut u8, cell: Self) {
+        unsafe { slot.write(cell) };
+    }
+    unsafe fn load_span(slot: *const u8) -> Self {
+        unsafe { slot.read() }
+    }
+    unsafe fn store_dst(cell: Self, dst: *mut u8) {
+        unsafe { dst.write(cell) };
+    }
+}
+
+impl CellRepr for u64 {
+    const ESIZE: usize = 8;
+    unsafe fn load_slot(slot: *const u8) -> Self {
+        unsafe { (slot as *const u64).read() }
+    }
+    fn to_lane(self) -> u128 {
+        u128::from(self)
+    }
+    fn from_lane(lane: u128) -> Self {
+        lane as u64
+    }
+    unsafe fn store_span(slot: *mut u8, cell: Self) {
+        unsafe { (slot as *mut u64).write(cell) };
+    }
+    unsafe fn load_span(slot: *const u8) -> Self {
+        unsafe { (slot as *const u64).read() }
+    }
+    unsafe fn store_dst(cell: Self, dst: *mut u8) {
+        unsafe { (dst as *mut u64).write(cell) };
+    }
+}
+
+impl CellRepr for u128 {
+    const ESIZE: usize = 16;
+    unsafe fn load_slot(slot: *const u8) -> Self {
+        unsafe { (slot as *const u128).read_unaligned() }
+    }
+    fn to_lane(self) -> u128 {
+        self
+    }
+    fn from_lane(lane: u128) -> Self {
+        lane
+    }
+    unsafe fn store_span(slot: *mut u8, cell: Self) {
+        unsafe { (slot as *mut u128).write_unaligned(cell) };
+    }
+    unsafe fn load_span(slot: *const u8) -> Self {
+        unsafe { (slot as *const u128).read_unaligned() }
+    }
+    unsafe fn store_dst(cell: Self, dst: *mut u8) {
+        unsafe { (dst as *mut u128).write_unaligned(cell) };
+    }
+}
+
+// The match literals in the two exported faces are pinned to the impls
+// — change one side without the other and the compiler stops the
+// build here.
+const _: () = assert!(u8::ESIZE == 1 && u64::ESIZE == 8 && u128::ESIZE == 16);
+
+// === The hang-in demonstration ======================================
+// A future construct's cell, hung into the same shell: 16 bytes —
+// payload in the low 64, the string symbol ID in bits 64–96, the kind
+// tag in bits 96–128 (the spare lane ROADMAP.md claims). Dead by
+// design — nothing wires it to the ABI or the compiler — it exists to
+// prove the shell: ONE impl block rides the same storage cores every
+// dense table runs on today, with zero changes to them. The string-
+// key milestone materializes its exported face; the storage below is
+// already done.
+
+/// The string-keyed cell of a future construct — see the section
+/// comment above for the bit layout and why this compiles.
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub struct KeyedCell(u128);
+
+#[allow(dead_code)]
+impl cell_sealed::Sealed for KeyedCell {}
+
+#[allow(dead_code)]
+impl CellRepr for KeyedCell {
+    const ESIZE: usize = 16;
+    unsafe fn load_slot(slot: *const u8) -> Self {
+        Self(unsafe { (slot as *const u128).read_unaligned() })
+    }
+    fn to_lane(self) -> u128 {
+        self.0
+    }
+    fn from_lane(lane: u128) -> Self {
+        Self(lane)
+    }
+    unsafe fn store_span(slot: *mut u8, cell: Self) {
+        unsafe { (slot as *mut u128).write_unaligned(cell.0) };
+    }
+    unsafe fn load_span(slot: *const u8) -> Self {
+        Self(unsafe { (slot as *const u128).read_unaligned() })
+    }
+    unsafe fn store_dst(cell: Self, dst: *mut u8) {
+        unsafe { (dst as *mut u128).write_unaligned(cell.0) };
+    }
+}
+
+/// The demonstration that a future construct reuses the core: a
+/// string-keyed store is this one call over its own exported face —
+/// the routing (sparse/far/dense), the shadowing, and the alignment
+/// contract all come free.
+///
+/// # Safety
+/// `t` a live GlmTable; sketch only, never wired.
+#[allow(dead_code)]
+unsafe fn keyed_set(t: *mut GlmTable, index: i64, cell: KeyedCell) {
+    unsafe { set_core::<KeyedCell>(t, index, (&cell as *const KeyedCell).cast()) };
+}
+
 // Phase 3 — C-ABI set / get endpoints (mode-aware routing)
 
 /// Lua-parity death for integer division/modulo by zero, called ahead
@@ -284,7 +489,31 @@ pub unsafe extern "C" fn glm_tbl_set(t: *mut GlmTable, index: i64, val: *const u
         eprintln!("glm runtime error: attempt to index a nil value (null table row)");
         std::process::abort();
     }
-    let tbl = &mut *t;
+    // The exported face routes the runtime esize to its repr; the
+    // sparse/far/dense routing is shared, written once in set_core.
+    // (The checker pins esize to 1, 8, or 16 — anything else is a
+    // compiler bug and dies loudly instead of mis-storing.)
+    match unsafe { (&*t).esize } {
+        1 => unsafe { set_core::<u8>(t, index, val) },
+        8 => unsafe { set_core::<u64>(t, index, val) },
+        16 => unsafe { set_core::<u128>(t, index, val) },
+        other => {
+            eprintln!("glm runtime error: GlmTable esize {other} has no cell repr");
+            std::process::abort();
+        }
+    }
+}
+
+/// The store core, written once per movement instead of once per
+/// esize: the mode/threshold/shadow routing every repr shares. The
+/// hand-duplicated esize arms this replaces are exactly where the
+/// aligned-u128 bug lived — a duplicated arm cannot exist here.
+///
+/// # Safety
+/// `t` live from glm_tbl_new (non-null); `val` readable for
+/// `C::ESIZE` bytes.
+unsafe fn set_core<C: CellRepr>(t: *mut GlmTable, index: i64, val: *const u8) {
+    let tbl = unsafe { &mut *t };
 
     // Both faces below drop a negative index: it names no cell in
     // either layout (the array part addresses 0..up; the sparse map
@@ -300,19 +529,9 @@ pub unsafe extern "C" fn glm_tbl_set(t: *mut GlmTable, index: i64, val: *const u
         if index < 0 {
             return;
         }
-        let map = &mut *tbl.sparse_map;
-        if tbl.esize == 16 {
-            // An Any (tagged) cell: the whole 16 bytes ride the map
-            // as one u128 — high 64 = tag, low 64 = payload.
-            let v = *(val as *const u128);
-            map.insert(index, v);
-        } else if tbl.esize == 8 {
-            let v = *(val as *const u64) as u128;
-            map.insert(index, v);
-        } else {
-            let v = *val as u64 as u128;
-            map.insert(index, v);
-        }
+        let map = unsafe { &mut *tbl.sparse_map };
+        let v = unsafe { C::load_slot(val) };
+        map.insert(index, v.to_lane());
         return;
     }
 
@@ -323,14 +542,8 @@ pub unsafe extern "C" fn glm_tbl_set(t: *mut GlmTable, index: i64, val: *const u
     // raw GEP stores stay in-bounds and live against every store the
     // checked path performs, whatever the key computes to at runtime.
     if index > tbl.len.saturating_add(SPARSE_THRESHOLD) {
-        let v = if tbl.esize == 16 {
-            *(val as *const u128)
-        } else if tbl.esize == 8 {
-            *(val as *const u64) as u128
-        } else {
-            *val as u64 as u128
-        };
-        unsafe { overflow_map(t).insert(index, v) };
+        let v = unsafe { C::load_slot(val) };
+        unsafe { overflow_map(t).insert(index, v.to_lane()) };
         return;
     }
 
@@ -339,16 +552,9 @@ pub unsafe extern "C" fn glm_tbl_set(t: *mut GlmTable, index: i64, val: *const u
         return;
     }
     unsafe { span_grow(t, index.wrapping_add(1)) };
-    let ptr = tbl.data.add(index as usize * tbl.esize);
-    if tbl.esize == 16 {
-        // An Any (tagged) cell: 16 raw bytes, one aligned store.
-        unsafe { ptr.copy_from_nonoverlapping(val, 16) };
-    } else if tbl.esize == 8 {
-        let v = *(val as *const u64);
-        unsafe { ptr.cast::<u64>().write(v) };
-    } else {
-        unsafe { ptr.write(*val) };
-    }
+    let ptr = unsafe { tbl.data.add(index as usize * C::ESIZE) };
+    let cell = unsafe { C::load_slot(val) };
+    unsafe { C::store_span(ptr, cell) };
     // The dense write is the newer value at this index — shadow away
     // an overflow entry an earlier far store left, so the read-side
     // overlay (map wins while present) cannot resurrect it.
@@ -375,28 +581,40 @@ pub unsafe extern "C" fn glm_tbl_get(t: *mut GlmTable, index: i64, dst: *mut u8,
         std::ptr::write_bytes(dst, 0, esize);
         return;
     }
-    let tbl = &mut *t;
+    // The exported face routes the runtime esize to its repr — the
+    // same shell as the store side.
+    match unsafe { (&*t).esize } {
+        1 => unsafe { get_core::<u8>(t, index, dst) },
+        8 => unsafe { get_core::<u64>(t, index, dst) },
+        16 => unsafe { get_core::<u128>(t, index, dst) },
+        other => {
+            eprintln!("glm runtime error: GlmTable esize {other} has no cell repr");
+            std::process::abort();
+        }
+    }
+}
+
+/// The read core — the total read: sparse map, dense overlay, bounds,
+/// zero-fill, span. Written once; the hand-duplicated esize arms this
+/// replaces are exactly where the aligned-u128 bug lived.
+///
+/// # Safety
+/// `t` live from glm_tbl_new (non-null); `dst` writable for
+/// `C::ESIZE` bytes.
+unsafe fn get_core<C: CellRepr>(t: *mut GlmTable, index: i64, dst: *mut u8) {
+    let tbl = unsafe { &mut *t };
 
     // ---- Sparse: HashMap lookup ----------------------------------------
     if tbl.mode == TableMode::Sparse {
         if index < 0 {
-            unsafe { std::ptr::write_bytes(dst, 0, tbl.esize) };
+            std::ptr::write_bytes(dst, 0, C::ESIZE);
             return;
         }
-        let map = &mut *tbl.sparse_map;
-        if let Some(&v) = map.get(&index) {
-            if tbl.esize == 16 {
-                // An Any (tagged) cell: one u128 back into 16 bytes.
-                unsafe {
-                    std::ptr::copy_nonoverlapping((&v as *const u128).cast::<u8>(), dst, 16);
-                }
-            } else if tbl.esize == 8 {
-                unsafe { *(dst as *mut u64) = v as u64 };
-            } else {
-                unsafe { *dst = (v & 0xff) as u8 };
-            }
+        let map = unsafe { &mut *tbl.sparse_map };
+        if let Some(&lane) = map.get(&index) {
+            unsafe { C::store_dst(C::from_lane(lane), dst) };
         } else {
-            unsafe { std::ptr::write_bytes(dst, 0, tbl.esize) };
+            std::ptr::write_bytes(dst, 0, C::ESIZE);
         }
         return;
     }
@@ -407,31 +625,18 @@ pub unsafe extern "C" fn glm_tbl_get(t: *mut GlmTable, index: i64, dst: *mut u8,
     // everything else (absent cells zero-fill, the total read).
     if index >= 0
         && !tbl.sparse_map.is_null()
-        && let Some(&v) = unsafe { (&*tbl.sparse_map).get(&index) }
+        && let Some(&lane) = unsafe { (&*tbl.sparse_map).get(&index) }
     {
-        if tbl.esize == 16 {
-            unsafe {
-                std::ptr::copy_nonoverlapping((&v as *const u128).cast::<u8>(), dst, 16);
-            }
-        } else if tbl.esize == 8 {
-            unsafe { *(dst as *mut u64) = v as u64 };
-        } else {
-            unsafe { *dst = (v & 0xff) as u8 };
-        }
+        unsafe { C::store_dst(C::from_lane(lane), dst) };
         return;
     }
     if index < 0 || index >= tbl.len {
-        unsafe { std::ptr::write_bytes(dst, 0, tbl.esize) };
+        std::ptr::write_bytes(dst, 0, C::ESIZE);
         return;
     }
-    let ptr = tbl.data.add(index as usize * tbl.esize);
-    if tbl.esize == 16 {
-        unsafe { std::ptr::copy_nonoverlapping(ptr, dst, 16) };
-    } else if tbl.esize == 8 {
-        unsafe { *(dst as *mut u64) = ptr.cast::<u64>().read() };
-    } else {
-        unsafe { *dst = ptr.read() };
-    }
+    let ptr = unsafe { tbl.data.add(index as usize * C::ESIZE) };
+    let cell = unsafe { C::load_span(ptr) };
+    unsafe { C::store_dst(cell, dst) };
 }
 
 unsafe fn span_grow(t: *mut GlmTable, want: i64) {

@@ -2,9 +2,7 @@
 
 This documents `.gdbinit.agent`, the GDB configuration purpose-built for AI-agent
 debugging sessions in this repo. It is loaded *instead of* the human-oriented
-`./.gdbinit` and is optimized for one thing: maximum diagnostic signal per token.
-(The human config's ANSI dashboard, borders, and per-stop register dumps are for
-eyes, not context windows.)
+`./.gdbinit` and is optimized for token efficiency.
 
 ## Launching
 
@@ -15,11 +13,27 @@ and the trace plates relative to it.
 # interactive session (.so / dlopen face)
 rust-gdb -nx -x .gdbinit.agent --args ./target/debug/glm --debug cases/<case>.lua <args...>
 
-# fully batched — the form an agent runs autonomously
-rust-gdb -nx -x .gdbinit.agent --batch -x /tmp/session.gdb --args ./target/debug/glm --debug cases/<case>.lua <args...>
-
 # standalone exe face (glm_out IS the program)
 rust-gdb -nx -x .gdbinit.agent ./glm_out <args...>
+```
+
+The fully batched form — the one an agent runs autonomously — takes a second
+`-x`: a **command file you write yourself**, one GDB command per line (exactly
+what you would type interactively, the custom commands below included). That
+file does not exist until you create it, and any path works — `/tmp/session.gdb`
+is just the convention used here:
+
+```bash
+cat > /tmp/session.gdb <<'EOF'
+break 21_interop_alloc_arg_header.lua:15
+run
+cregs
+parg arg
+pcells arg 3
+cbt 8
+EOF
+rust-gdb -nx -x .gdbinit.agent --batch -x /tmp/session.gdb \
+  --args ./target/debug/glm --debug cases/21_interop_alloc_arg_header.lua 9
 ```
 
 `-nx` skips `~/.gdbinit` **and** `./.gdbinit` (the human config), while
@@ -92,25 +106,43 @@ decode correctly.
 - **`emissionKind` spelling**: LLVM 22+ accepts `FullDebug`, not the old
   `Full` (`LineTablesOnly` outright crashes clang 23). Relevant if you
   hand-write test IR.
+- **Define-body expressions parse in the current frame's language.** The
+  config's commands cast with C syntax (`(char*)`, `(unsigned long)`,
+  function-pointer calls); at the `glm_exec` face that is harmless — the
+  hand-written DWARF declares no Rust language, so the frame is C — but
+  inside `rt.rs` frames (DWARF Rust) the casts die: `xq`/`pkind` with
+  `No symbol 'unsigned' in current context`, `parg` with `unexpected
+  token`. The cast-bearing commands therefore wrap their bodies in
+  `set language c` … `set language auto` (a "current language does not
+  match this frame" warning during the body is expected and harmless).
+  `_cell` sets C without restoring so the nested sandwich cannot flip
+  the language back mid-body of its caller. Never strip the sandwich.
+- **A convenience var compared before its first assignment is void**, and
+  the equality test dies with `Invalid type combination in equality
+  test`. `pcells` initializes `$bufp` at body top for exactly this
+  reason: its sparse fallback (inferior-call of `glm_tbl_get`) never
+  runs on the dense smoke face, so only sparse tables ever saw the trap.
+- **Pending breakpoints with conditions silently never fire.** `break
+  glm_tbl_set if index == 200000` issued before `run` resolves at the
+  dlopen but stops nothing (the same breakpoint without `if` fires
+  fine). Set conditional `.so` breakpoints after the first stop — the
+  module is loaded then, the breakpoint binds immediately, and the
+  condition works — or use an unconditional breakpoint plus `continue`
+  counting when the call sequence is known.
 - Variable visibility is SSA-binding-accurate: a local shows `<optimized out>`
   on its own declaration line (it is not born yet) and becomes visible from its
   binding onward — that is correct DWARF, not a bug.
 
 ## Smoke test
 
-After toolchain updates, one batched command re-verifies the whole workflow
-(expect: breakpoint on a Lua line, one dense register line, JSON header, decoded
-cells, elided backtrace):
-
-```bash
-cat > /tmp/smoke.gdb <<'EOF'
-break 21_interop_alloc_arg_header.lua:15
-run
-cregs
-parg arg
-pcells arg 3
-cbt 8
-EOF
-rust-gdb -nx -x .gdbinit.agent --batch -x /tmp/smoke.gdb \
-  --args ./target/debug/glm --debug cases/21_interop_alloc_arg_header.lua 9
-```
+After toolchain or config updates, run `./agent_smoke.sh` from the repo
+root (`cargo build` first). It drives both faces batched — dense
+(breakpoint on a Lua line, `cregs`, `parg`, `pcells`, elided `cbt`) and
+sparse (born-sparse `Table<Any>` far-key cell: the `glm_tbl_set` stop
+sequence, tagged-`Any` decode, the overflow-map `pcells` fallback, the
+Lua-line anchor) — and checks the load-bearing output shapes with ✓/✗
+per marker. The script's header carries the expected shapes; a ✗ maps
+to the landmines above (`xq` dying with `No symbol 'unsigned'` =
+language sandwich stripped; `pcells` dying with `Invalid type
+combination in equality test` = the `$bufp` init gone; a missing
+pending-breakpoint stop = `breakpoint pending on` removed).

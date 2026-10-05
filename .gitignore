@@ -7,7 +7,12 @@ __pycache__/
 libglm_out.so
 /cases/*
 !/cases/21_interop_alloc_arg_header.lua
+!/cases/90_smoke_far_any_tag.lua
 !/cases/.gitkeep
 /lock
 /diff
 .gdb_history
+/*.md
+!/README.md
+!/AGENT.md
+.zcodeignore
