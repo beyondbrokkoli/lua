@@ -147,7 +147,23 @@ fn elem_layout(len: i64, esize: usize) -> Layout {
         .ok()
         .and_then(|l| l.checked_mul(esize))
         .unwrap_or_else(|| abort_alloc(usize::MAX));
-    Layout::from_size_align(bytes, 8).unwrap_or_else(|_| abort_alloc(bytes))
+    Layout::from_size_align(bytes, span_align(esize)).unwrap_or_else(|_| abort_alloc(bytes))
+}
+
+/// The dense span's allocation alignment for one esize: the cell
+/// repr's ALIGN — 16 for the tagged Any word, 8 for every other.
+/// This is the engine half of the tiered alignment law: the span is
+/// memory the runtime itself allocates (through this mapping, at
+/// every alloc/realloc/dealloc site), so its alignment is a fact the
+/// runtime states and every span movement relies on by construction.
+/// The FFI seam's 8-byte minimum guarantee is untouched — no caller
+/// ever supplies a cell buffer.
+const fn span_align(esize: usize) -> usize {
+    if esize == u128::ESIZE {
+        u128::ALIGN
+    } else {
+        u64::ALIGN
+    }
 }
 
 fn abort_alloc(bytes: usize) -> ! {
@@ -263,12 +279,17 @@ unsafe fn overflow_map(t: *mut GlmTable) -> &'static mut HashMap<i64, u128> {
 // The horizontal extension for the cell dimension collapses to a
 // single point: one impl, one match arm in each extern.
 //
-// The alignment contract lives here, once. Value slots and span cells
-// are 8-aligned (the emitted value slots name align 8; heap cells
-// stride in ESIZE steps off an 8-aligned base), so any repr wider
-// than 8 bytes MUST load and store unaligned. This is the rule whose
-// per-arm violation bred the read_unaligned bug — the duplicated arms
-// are gone; the rule is written once and cannot drift per arm.
+// The alignment contract lives here, once, as two trust tiers. The
+// dense span is ENGINE-OWNED memory — elem_layout allocates it at the
+// repr's ALIGN (16 for the u128 cell), so span movements use aligned
+// ops by construction and debug asserts police the promise. The FFI
+// seam is a BYTE MOVER — the exported *const u8 / *mut u8 contract
+// guarantees 8 bytes of alignment, never more — so slot/dst movements
+// stay unaligned: not timidity, the only op correct against the
+// promise the ABI actually makes. And the 16-byte cell no longer
+// rides that seam at all: glm_tbl_set_any / glm_tbl_get_any pass the
+// whole word in the i128 register pair (glm_any_print's dialect) — a
+// register has no alignment.
 //
 // The fill-loop fast store the IR emits does not pass through these
 // cores at all (its raw in-bounds GEP is sound by the density
@@ -292,8 +313,16 @@ pub trait CellRepr: Copy + cell_sealed::Sealed {
     /// Bytes per cell — the GlmTable esize this repr answers to.
     const ESIZE: usize;
 
-    /// Read one cell from the emitted value slot (8-aligned; reprs
-    /// wider than 8 bytes read unaligned).
+    /// The dense span's allocation alignment — elem_layout demands it
+    /// of the allocator at every site, so span movements may use
+    /// aligned ops by construction (the engine half of the tiered
+    /// alignment law; the tripwire asserts below police it).
+    const ALIGN: usize;
+
+    /// Read one cell from a caller's FFI value slot. The seam's byte
+    /// pointers promise 8 bytes of alignment, never more, so a repr
+    /// wider than 8 bytes reads unaligned (the forgiving half of the
+    /// tiered law).
     ///
     /// # Safety
     /// `slot` readable for `ESIZE` bytes.
@@ -304,21 +333,29 @@ pub trait CellRepr: Copy + cell_sealed::Sealed {
     fn to_lane(self) -> u128;
 
     /// Narrow from the lane (the exact complement of `to_lane`).
+    /// Lane zero is every repr's zero cell — the total read's answer
+    /// for an absent entry.
     fn from_lane(lane: u128) -> Self;
 
-    /// Store one cell into the dense span.
+    /// Store one cell into the dense span — engine-owned memory,
+    /// ALIGN-aligned by elem_layout.
     ///
     /// # Safety
-    /// `slot` writable for `ESIZE` bytes and in bounds.
+    /// `slot` writable for `ESIZE` bytes, in bounds, and aligned to
+    /// `ALIGN` (guaranteed by construction for span cells).
     unsafe fn store_span(slot: *mut u8, cell: Self);
 
-    /// Read one cell out of the dense span.
+    /// Read one cell out of the dense span — engine-owned memory,
+    /// ALIGN-aligned by elem_layout.
     ///
     /// # Safety
-    /// `slot` readable for `ESIZE` bytes and in bounds.
+    /// `slot` readable for `ESIZE` bytes, in bounds, and aligned to
+    /// `ALIGN`.
     unsafe fn load_span(slot: *const u8) -> Self;
 
-    /// Store one cell into a caller's dst slot (the get side).
+    /// Store one cell into a caller's FFI dst slot (the byte face of
+    /// the get side) — align 8 by the seam's promise, unaligned for
+    /// wide reprs.
     ///
     /// # Safety
     /// `dst` writable for `ESIZE` bytes.
@@ -331,6 +368,7 @@ impl cell_sealed::Sealed for u128 {}
 
 impl CellRepr for u8 {
     const ESIZE: usize = 1;
+    const ALIGN: usize = 8;
     unsafe fn load_slot(slot: *const u8) -> Self {
         unsafe { *slot }
     }
@@ -353,6 +391,7 @@ impl CellRepr for u8 {
 
 impl CellRepr for u64 {
     const ESIZE: usize = 8;
+    const ALIGN: usize = 8;
     unsafe fn load_slot(slot: *const u8) -> Self {
         unsafe { (slot as *const u64).read() }
     }
@@ -375,6 +414,7 @@ impl CellRepr for u64 {
 
 impl CellRepr for u128 {
     const ESIZE: usize = 16;
+    const ALIGN: usize = 16;
     unsafe fn load_slot(slot: *const u8) -> Self {
         unsafe { (slot as *const u128).read_unaligned() }
     }
@@ -385,10 +425,15 @@ impl CellRepr for u128 {
         lane
     }
     unsafe fn store_span(slot: *mut u8, cell: Self) {
-        unsafe { (slot as *mut u128).write_unaligned(cell) };
+        // Engine-owned span cell: 16-aligned by elem_layout. The
+        // assert is the tripwire — a debug-gauntlet run dies here the
+        // moment any allocator math regresses the promise.
+        debug_assert!(slot.addr() & 15 == 0, "u128 span cell not 16-aligned");
+        unsafe { (slot as *mut u128).write(cell) };
     }
     unsafe fn load_span(slot: *const u8) -> Self {
-        unsafe { (slot as *const u128).read_unaligned() }
+        debug_assert!(slot.addr() & 15 == 0, "u128 span cell not 16-aligned");
+        unsafe { (slot as *const u128).read() }
     }
     unsafe fn store_dst(cell: Self, dst: *mut u8) {
         unsafe { (dst as *mut u128).write_unaligned(cell) };
@@ -397,8 +442,16 @@ impl CellRepr for u128 {
 
 // The match literals in the two exported faces are pinned to the impls
 // — change one side without the other and the compiler stops the
-// build here.
+// build here. The alignment mapping rides the same pin: elem_layout
+// allocates every span at the repr's ALIGN, so the promise the span
+// movements rely on cannot drift from the impls either.
 const _: () = assert!(u8::ESIZE == 1 && u64::ESIZE == 8 && u128::ESIZE == 16);
+const _: () = {
+    assert!(u8::ALIGN == 8 && u64::ALIGN == 8 && u128::ALIGN == 16);
+    assert!(span_align(u8::ESIZE) == u8::ALIGN);
+    assert!(span_align(u64::ESIZE) == u64::ALIGN);
+    assert!(span_align(u128::ESIZE) == u128::ALIGN);
+};
 
 // === The hang-in demonstration ======================================
 // A future construct's cell, hung into the same shell: 16 bytes —
@@ -422,6 +475,7 @@ impl cell_sealed::Sealed for KeyedCell {}
 #[allow(dead_code)]
 impl CellRepr for KeyedCell {
     const ESIZE: usize = 16;
+    const ALIGN: usize = 16;
     unsafe fn load_slot(slot: *const u8) -> Self {
         Self(unsafe { (slot as *const u128).read_unaligned() })
     }
@@ -432,10 +486,12 @@ impl CellRepr for KeyedCell {
         Self(lane)
     }
     unsafe fn store_span(slot: *mut u8, cell: Self) {
-        unsafe { (slot as *mut u128).write_unaligned(cell.0) };
+        debug_assert!(slot.addr() & 15 == 0, "KeyedCell span cell not 16-aligned");
+        unsafe { (slot as *mut u128).write(cell.0) };
     }
     unsafe fn load_span(slot: *const u8) -> Self {
-        Self(unsafe { (slot as *const u128).read_unaligned() })
+        debug_assert!(slot.addr() & 15 == 0, "KeyedCell span cell not 16-aligned");
+        Self(unsafe { (slot as *const u128).read() })
     }
     unsafe fn store_dst(cell: Self, dst: *mut u8) {
         unsafe { (dst as *mut u128).write_unaligned(cell.0) };
@@ -451,7 +507,7 @@ impl CellRepr for KeyedCell {
 /// `t` a live GlmTable; sketch only, never wired.
 #[allow(dead_code)]
 unsafe fn keyed_set(t: *mut GlmTable, index: i64, cell: KeyedCell) {
-    unsafe { set_core::<KeyedCell>(t, index, (&cell as *const KeyedCell).cast()) };
+    unsafe { set_core::<KeyedCell>(t, index, cell) };
 }
 
 // Phase 3 — C-ABI set / get endpoints (mode-aware routing)
@@ -494,9 +550,9 @@ pub unsafe extern "C" fn glm_tbl_set(t: *mut GlmTable, index: i64, val: *const u
     // (The checker pins esize to 1, 8, or 16 — anything else is a
     // compiler bug and dies loudly instead of mis-storing.)
     match unsafe { (&*t).esize } {
-        1 => unsafe { set_core::<u8>(t, index, val) },
-        8 => unsafe { set_core::<u64>(t, index, val) },
-        16 => unsafe { set_core::<u128>(t, index, val) },
+        1 => unsafe { set_core::<u8>(t, index, u8::load_slot(val)) },
+        8 => unsafe { set_core::<u64>(t, index, u64::load_slot(val)) },
+        16 => unsafe { set_core::<u128>(t, index, u128::load_slot(val)) },
         other => {
             eprintln!("glm runtime error: GlmTable esize {other} has no cell repr");
             std::process::abort();
@@ -504,15 +560,18 @@ pub unsafe extern "C" fn glm_tbl_set(t: *mut GlmTable, index: i64, val: *const u
     }
 }
 
-/// The store core, written once per movement instead of once per
-/// esize: the mode/threshold/shadow routing every repr shares. The
-/// hand-duplicated esize arms this replaces are exactly where the
-/// aligned-u128 bug lived — a duplicated arm cannot exist here.
+/// The store routing core, written once for every repr: the
+/// mode/threshold/shadow routing. The cell arrives BY VALUE — the
+/// faces are adapters that produce it (the byte-pointer face loads it
+/// from the caller's slot, the register face passes it straight
+/// through), so the only physical movements here are the lane ride
+/// and the span store. The hand-duplicated esize arms this replaces
+/// are exactly where the aligned-u128 bug lived — a duplicated arm
+/// cannot exist here.
 ///
 /// # Safety
-/// `t` live from glm_tbl_new (non-null); `val` readable for
-/// `C::ESIZE` bytes.
-unsafe fn set_core<C: CellRepr>(t: *mut GlmTable, index: i64, val: *const u8) {
+/// `t` live from glm_tbl_new (non-null).
+unsafe fn set_core<C: CellRepr>(t: *mut GlmTable, index: i64, cell: C) {
     let tbl = unsafe { &mut *t };
 
     // Both faces below drop a negative index: it names no cell in
@@ -530,8 +589,7 @@ unsafe fn set_core<C: CellRepr>(t: *mut GlmTable, index: i64, val: *const u8) {
             return;
         }
         let map = unsafe { &mut *tbl.sparse_map };
-        let v = unsafe { C::load_slot(val) };
-        map.insert(index, v.to_lane());
+        map.insert(index, cell.to_lane());
         return;
     }
 
@@ -542,8 +600,7 @@ unsafe fn set_core<C: CellRepr>(t: *mut GlmTable, index: i64, val: *const u8) {
     // raw GEP stores stay in-bounds and live against every store the
     // checked path performs, whatever the key computes to at runtime.
     if index > tbl.len.saturating_add(SPARSE_THRESHOLD) {
-        let v = unsafe { C::load_slot(val) };
-        unsafe { overflow_map(t).insert(index, v.to_lane()) };
+        unsafe { overflow_map(t).insert(index, cell.to_lane()) };
         return;
     }
 
@@ -553,7 +610,6 @@ unsafe fn set_core<C: CellRepr>(t: *mut GlmTable, index: i64, val: *const u8) {
     }
     unsafe { span_grow(t, index.wrapping_add(1)) };
     let ptr = unsafe { tbl.data.add(index as usize * C::ESIZE) };
-    let cell = unsafe { C::load_slot(val) };
     unsafe { C::store_span(ptr, cell) };
     // The dense write is the newer value at this index — shadow away
     // an overflow entry an earlier far store left, so the read-side
@@ -584,9 +640,9 @@ pub unsafe extern "C" fn glm_tbl_get(t: *mut GlmTable, index: i64, dst: *mut u8,
     // The exported face routes the runtime esize to its repr — the
     // same shell as the store side.
     match unsafe { (&*t).esize } {
-        1 => unsafe { get_core::<u8>(t, index, dst) },
-        8 => unsafe { get_core::<u64>(t, index, dst) },
-        16 => unsafe { get_core::<u128>(t, index, dst) },
+        1 => unsafe { u8::store_dst(get_core::<u8>(t, index), dst) },
+        8 => unsafe { u64::store_dst(get_core::<u64>(t, index), dst) },
+        16 => unsafe { u128::store_dst(get_core::<u128>(t, index), dst) },
         other => {
             eprintln!("glm runtime error: GlmTable esize {other} has no cell repr");
             std::process::abort();
@@ -594,29 +650,29 @@ pub unsafe extern "C" fn glm_tbl_get(t: *mut GlmTable, index: i64, dst: *mut u8,
     }
 }
 
-/// The read core — the total read: sparse map, dense overlay, bounds,
-/// zero-fill, span. Written once; the hand-duplicated esize arms this
-/// replaces are exactly where the aligned-u128 bug lived.
+/// The read routing core — the total read: sparse map, dense overlay,
+/// bounds, zero-fill. Returns the cell BY VALUE; the calling face
+/// delivers it (the byte-pointer face through store_dst, the register
+/// face straight out of its own return). The zero cell is lane zero
+/// narrowed: 0 for every scalar repr, and for the Any word tag 0
+/// payload 0 — an Integer zero, LoadAnyZero's convention, the total
+/// read's answer for an absent cell.
 ///
 /// # Safety
-/// `t` live from glm_tbl_new (non-null); `dst` writable for
-/// `C::ESIZE` bytes.
-unsafe fn get_core<C: CellRepr>(t: *mut GlmTable, index: i64, dst: *mut u8) {
+/// `t` live from glm_tbl_new (non-null).
+unsafe fn get_core<C: CellRepr>(t: *mut GlmTable, index: i64) -> C {
     let tbl = unsafe { &mut *t };
 
     // ---- Sparse: HashMap lookup ----------------------------------------
     if tbl.mode == TableMode::Sparse {
         if index < 0 {
-            std::ptr::write_bytes(dst, 0, C::ESIZE);
-            return;
+            return C::from_lane(0);
         }
         let map = unsafe { &mut *tbl.sparse_map };
-        if let Some(&lane) = map.get(&index) {
-            unsafe { C::store_dst(C::from_lane(lane), dst) };
-        } else {
-            std::ptr::write_bytes(dst, 0, C::ESIZE);
-        }
-        return;
+        return match map.get(&index) {
+            Some(&lane) => C::from_lane(lane),
+            None => C::from_lane(0),
+        };
     }
 
     // ---- Dense: overflow overlay, then bounds check --------------------
@@ -627,16 +683,65 @@ unsafe fn get_core<C: CellRepr>(t: *mut GlmTable, index: i64, dst: *mut u8) {
         && !tbl.sparse_map.is_null()
         && let Some(&lane) = unsafe { (&*tbl.sparse_map).get(&index) }
     {
-        unsafe { C::store_dst(C::from_lane(lane), dst) };
-        return;
+        return C::from_lane(lane);
     }
     if index < 0 || index >= tbl.len {
-        std::ptr::write_bytes(dst, 0, C::ESIZE);
-        return;
+        return C::from_lane(0);
     }
     let ptr = unsafe { tbl.data.add(index as usize * C::ESIZE) };
-    let cell = unsafe { C::load_span(ptr) };
-    unsafe { C::store_dst(cell, dst) };
+    unsafe { C::load_span(ptr) }
+}
+
+/// The register face of the store seam for the tagged Any cell: the
+/// whole 16-byte word crosses in the i128 register pair — the same
+/// dialect glm_any_print and glm_any_eq already speak — so there is
+/// no caller slot and no alignment question at the seam at all. The
+/// IR emits this call for every esize-16 store; glm_tbl_set stays
+/// frozen for byte-pointer callers.
+///
+/// # Safety
+/// `t` live from glm_tbl_new with `esize == 16`, or null: a null `t`
+/// is row absence at runtime — the same Lua-parity death as
+/// glm_tbl_set's store side.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glm_tbl_set_any(t: *mut GlmTable, index: i64, val: i128) {
+    if t.is_null() {
+        // Row absence, register dialect: the same death as the byte
+        // face — no silent drop of the value.
+        unsafe { glm_trace_set(TRACE_FAIL_NULL_ROW_STORE) };
+        eprintln!("glm runtime error: attempt to index a nil value (null table row)");
+        std::process::abort();
+    }
+    match unsafe { (&*t).esize } {
+        16 => unsafe { set_core::<u128>(t, index, val as u128) },
+        other => {
+            eprintln!("glm runtime error: GlmTable esize {other} has no register cell face");
+            std::process::abort();
+        }
+    }
+}
+
+/// The register face of the read seam for the tagged Any cell: the
+/// cell returns whole in the i128 register pair. A null table (the
+/// unallocated nested row) and an absent cell both answer the tagged
+/// zero — tag 0 payload 0, an Integer zero, LoadAnyZero's convention.
+/// The IR emits this call for every esize-16 read; glm_tbl_get stays
+/// frozen for byte-pointer callers.
+///
+/// # Safety
+/// `t` live from glm_tbl_new with `esize == 16`, or null (answers 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glm_tbl_get_any(t: *mut GlmTable, index: i64) -> i128 {
+    if t.is_null() {
+        return 0;
+    }
+    match unsafe { (&*t).esize } {
+        16 => unsafe { get_core::<u128>(t, index) as i128 },
+        other => {
+            eprintln!("glm runtime error: GlmTable esize {other} has no register cell face");
+            std::process::abort();
+        }
+    }
 }
 
 unsafe fn span_grow(t: *mut GlmTable, want: i64) {
@@ -1255,7 +1360,8 @@ fn arg_kind_table(kind: i32) -> &'static str {
 /// address is a local — glm_tbl_set copies the bytes immediately. The
 /// ANY kind parses every word into a tagged cell (the declared
 /// precedence int → float → bool → string, the same grammar the
-/// dev-loop host's parse_word applies).
+/// dev-loop host's parse_word applies) and stores it through the
+/// register face — no value slot at all.
 ///
 /// # Safety
 /// `t` live from glm_tbl_new; `w` any bytes.
@@ -1283,7 +1389,7 @@ unsafe fn set_word(t: *mut GlmTable, i: i64, w: &[u8], kind: i32) -> Result<(), 
         }
         GLM_ARG_ANY => {
             let v = unsafe { any_of_word(w) };
-            unsafe { glm_tbl_set(t, i, (&v as *const i128).cast()) };
+            unsafe { glm_tbl_set_any(t, i, v) };
         }
         _ => return Err(()),
     }

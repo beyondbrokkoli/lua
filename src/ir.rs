@@ -53,12 +53,13 @@ pub trait Repr {
     }
     const IS_PACKED: bool = false;
     const IS_FLOAT: bool = false;
-    /// The explicit align clause a raw store into a table's data
-    /// buffer needs: buffers are 8-aligned, and an i128 store without
-    /// an align would let LLVM assume the i128 ABI alignment (16).
-    fn buf_store_align() -> &'static str {
-        ""
-    }
+    /// Whether this repr's cells cross the table seam in REGISTERS:
+    /// the 16-byte Any cell rides glm_tbl_set_any / glm_tbl_get_any
+    /// (the i128 register pair — glm_any_print's dialect), so its
+    /// set/get paths need no valp/dst slot and make no alignment
+    /// promise about caller memory. Every other repr rides the frozen
+    /// byte-pointer faces, whose slots promise 8 bytes of alignment.
+    const REG_FACE: bool = false;
     fn emit_move(target: &Reg<Self>, source: &Reg<Self>, code: &mut String);
     fn any(reg: Reg<Self>) -> AnyReg;
 }
@@ -162,9 +163,7 @@ impl Repr for Any {
     fn esize() -> u32 {
         16
     }
-    fn buf_store_align() -> &'static str {
-        ", align 8"
-    }
+    const REG_FACE: bool = true;
     fn emit_move(target: &Reg<Self>, source: &Reg<Self>, code: &mut String) {
         code.push_str(&format!(
             "  %v{} = add i128 %v{}, 0\n",

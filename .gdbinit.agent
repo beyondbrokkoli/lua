@@ -269,6 +269,51 @@ document xq
   Decode one 16-byte tagged cell (payload+GLM_ARG tag). Usage: xq <addr>
 end
 
+# --- xqv: one tagged 128-bit Any cell from a VALUE, one line ---------
+# The register seam's decoder: at a glm_tbl_set_any stop the cell IS
+# the i128 third argument (a register pair), not bytes at an address,
+# so xq's dereference cannot read it. Truncating casts pick the
+# halves ((unsigned long)val = payload, (unsigned long)(val >> 64) =
+# tag — the explicit __int128 cast spelling dies in gdb's C parser);
+# a float payload round-trips through an 8-byte inferior malloc —
+# gdb cannot bit-cast a convenience value in place (the same trick
+# pcells' fallback uses).
+define xqv
+  # Language sandwich (see parg): the casts below die in Rust frames.
+  set language c
+  if $argc == 0
+    echo usage: xqv <i128 value>\n
+  else
+    set $pl = (unsigned long)$arg0
+    set $tg = (unsigned long)($arg0 >> 64)
+    if $tg == 0
+      printf "int i:%ld u:0x%lx", (long)$pl, $pl
+    else
+      if $tg == 1
+        set $m = (char*)((void*(*)(unsigned long))malloc)(8)
+        *(unsigned long*)$m = $pl
+        printf "float u:0x%lx f:%g", $pl, *(double*)$m
+      else
+        if $tg == 2
+          printf "bool u:0x%lx b:%d", $pl, (int)($pl & 0xff)
+        else
+          if $tg == 3
+            printf "str u:0x%lx s:\"%s\"", $pl, (char*)$pl
+          else
+            printf "tag%ld u:0x%lx", $tg, $pl
+          end
+        end
+      end
+    end
+    echo \n
+  end
+  set language auto
+end
+document xqv
+  Decode one tagged 128-bit cell passed BY VALUE (glm_tbl_set_any /
+  glm_tbl_get_any stops). Usage: xqv <i128 expr, e.g. val>
+end
+
 # --- pkind: the module's exported boundary contract ---
 define pkind
   # Language sandwich (see parg): the function-pointer cast dies in

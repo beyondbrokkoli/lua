@@ -25,6 +25,7 @@ use glm_rt::rt::GlmTable;
 type GlmExec = unsafe extern "C" fn(args: *mut GlmTable) -> *mut GlmTable;
 type GlmTblNew = unsafe extern "C" fn(esize: usize, flags: u8) -> *mut GlmTable;
 type GlmTblSet = unsafe extern "C" fn(t: *mut GlmTable, index: i64, val: *const u8);
+type GlmTblSetAny = unsafe extern "C" fn(t: *mut GlmTable, index: i64, val: i128);
 type GlmTblGet = unsafe extern "C" fn(t: *mut GlmTable, index: i64, dst: *mut u8, esize: usize);
 type GlmTblFree = unsafe extern "C" fn(t: *mut GlmTable);
 // The string intern, resolved from the .so like every other boundary
@@ -196,6 +197,7 @@ unsafe fn run_boundary(words: &[String]) -> Result<(), String> {
     let glm_exec: GlmExec = unsafe { resolve_symbol(dylib, b"glm_exec\0")? };
     let glm_tbl_new: GlmTblNew = unsafe { resolve_symbol(dylib, b"glm_tbl_new\0")? };
     let glm_tbl_set: GlmTblSet = unsafe { resolve_symbol(dylib, b"glm_tbl_set\0")? };
+    let glm_tbl_set_any: GlmTblSetAny = unsafe { resolve_symbol(dylib, b"glm_tbl_set_any\0")? };
     let glm_tbl_get: GlmTblGet = unsafe { resolve_symbol(dylib, b"glm_tbl_get\0")? };
     let glm_tbl_free: GlmTblFree = unsafe { resolve_symbol(dylib, b"glm_tbl_free\0")? };
     let glm_str_intern: GlmStrIntern = unsafe { resolve_symbol(dylib, b"glm_str_intern\0")? };
@@ -248,16 +250,15 @@ unsafe fn run_boundary(words: &[String]) -> Result<(), String> {
                     if kind == glm_rt::rt::GLM_ARG_ANY {
                         // A string word under the dynamic contract: the
                         // intern gave the .so-identity pointer, pack it
-                        // as the cell's payload now.
+                        // as the cell's payload now — and cross through
+                        // the register face, like every Any store.
                         let cell = glm_rt::glm_any_pack(glm_rt::rt::GLM_ARG_STRING, p as u64);
-                        glm_tbl_set(args, i as i64, (&cell as *const i128).cast::<u8>());
+                        glm_tbl_set_any(args, i as i64, cell);
                     } else {
                         glm_tbl_set(args, i as i64, (&p as *const *const u8).cast::<u8>());
                     }
                 },
-                HostArg::Any(v) => unsafe {
-                    glm_tbl_set(args, i as i64, (v as *const i128).cast::<u8>())
-                },
+                HostArg::Any(v) => unsafe { glm_tbl_set_any(args, i as i64, *v) },
             }
         }
     }

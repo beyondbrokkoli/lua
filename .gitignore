@@ -6,6 +6,7 @@ __pycache__/
 .glm_rt_trace.bin
 libglm_out.so
 /cases/*
+!/cases/args_any_seam_phi_grow.lua
 !/cases/21_interop_alloc_arg_header.lua
 !/cases/90_smoke_far_any_tag.lua
 !/cases/.gitkeep

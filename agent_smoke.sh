@@ -14,16 +14,18 @@
 #     `#1 glm::run_boundary main.rs:...`.
 #
 #   sparse — born-sparse Table<Any> (cases/90_smoke_far_any_tag.lua):
-#     five glm_tbl_set stops before the Lua line — two host boundary
-#     fills of the arg table, two ctor stores, then the far store —
-#     hence run + 4 continues (unconditional breakpoint + continue
-#     counting; see the landmines in AGENT.md). On the far stop `xq
-#     val` decodes the tagged string `str u:0x... s:"world"`; at the
+#     five glm_tbl_set_any stops before the Lua line — two host
+#     boundary fills of the arg table, two ctor stores, then the far
+#     store, every Any store riding the register seam — hence run + 4
+#     continues (unconditional breakpoint + continue counting; see the
+#     landmines in AGENT.md). On the far stop `xqv val` decodes the
+#     tagged string `str u:0x... s:"world"` straight out of the i128
+#     argument; at the
 #     print line `parg t` shows `mode:sparse` and `pcells` decodes the
 #     overflow-map cell back out (`[0:int i:42 ... 1:str ... s:"world"
 #     ...]`); `cbt` anchors the frame at the ctor/far Lua line.
 #
-# Marker failures map to the config landmines (AGENT.md): `xq` dying
+# Marker failures map to the config landmines (AGENT.md): `xqv` dying
 # with `No symbol 'unsigned'` = the language sandwich was stripped;
 # `pcells` dying with `Invalid type combination in equality test` = the
 # `$bufp` init is gone; a missing pending-breakpoint stop = `breakpoint
@@ -32,9 +34,9 @@
 # History note: on trees before f932c82 the sparse face cannot complete
 # — the far store aborts the process with `misaligned pointer
 # dereference` from the debug staticlib (the aligned `*const u128`
-# deref that `read_unaligned` fixed). If the third glm_tbl_set stop
-# dies instead of decoding, check which tree you are on before blaming
-# the config.
+# deref that `read_unaligned` fixed). If the third glm_tbl_set_any
+# stop dies instead of decoding, check which tree you are on before
+# blaming the config.
 set -u
 FAIL=0
 SCRATCH=$(mktemp -d)
@@ -68,16 +70,16 @@ check dense "parg pseudo-JSON header"           '\{tbl:0x'
 check dense "pcells decoded int cell"           'int i:'
 check dense "cbt elides into the Rust host"     'glm::run_boundary'
 
-# ---- face 2: sparse (Table<Any> far-key cell) ------------------------
+# ---- face 2: sparse (Table<Any> far-key cell, register seam) ----------
 cat > "$SCRATCH/sparse.gdb" <<'EOF'
-break glm_tbl_set
+break glm_tbl_set_any
 break 90_smoke_far_any_tag.lua:12
 run
 continue
 continue
 continue
 continue
-xq val
+xqv val
 continue
 parg t
 pcells t 3

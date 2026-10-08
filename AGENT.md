@@ -64,6 +64,7 @@ when needed, using the commands below — every one prints dense, one-line outpu
 | `parg [addr\|var]` | `GlmTable` header as pseudo-JSON: `{tbl:0x5555... data:0x... len:8 reserve:0 esize:16 mode:dense ct:0 sparse:(nil)}`. No argument: tries `$rdi`, then `$rbx` (the boundary pointer at the `glm_exec` entry face). Prefer passing the Lua variable directly from a script frame: `parg arg`, `parg t`. |
 | `pcells <tbl\|var> [count]` | Decoded cells, one segment per cell: `[0:str u:0x... s:"hello"]`, `[0:int i:9 u:0x9]`, `[0:i:4613937818241073152 u:0x4008000000000000 f:3]`. Count defaults to `min(len, 4)`. |
 | `xq <addr>` | One tagged 128-bit cell on one line (int/float/bool/string decode). |
+| `xqv <i128 expr>` | Same decode for a cell passed BY VALUE — the register seam's decoder (`xqv val` at a `glm_tbl_set_any` stop). |
 | `pkind` | Inferior-calls `glm_arg_kind()`: `glm_arg_kind=4 (-1 none, 0 int, 1 float, 2 bool, 3 string, 4 any)` — the module's own boundary contract. |
 | `cbt [N]` | Backtrace with `std::`/`core::`/`alloc::`/libc/loader frames elided, N=12 default. Frame numbers stay gdb-native, so `frame N` still works: `#0 glm_exec 21_...lua:15` / `#1 glm::run_boundary main.rs:266` |
 | `here` | Current position as one line: `21_interop_alloc_arg_header.lua:15: print(sys_alloc_count())` — useful for re-orienting after `up`/`frame`. |
@@ -138,11 +139,12 @@ decode correctly.
 After toolchain or config updates, run `./agent_smoke.sh` from the repo
 root (`cargo build` first). It drives both faces batched — dense
 (breakpoint on a Lua line, `cregs`, `parg`, `pcells`, elided `cbt`) and
-sparse (born-sparse `Table<Any>` far-key cell: the `glm_tbl_set` stop
-sequence, tagged-`Any` decode, the overflow-map `pcells` fallback, the
-Lua-line anchor) — and checks the load-bearing output shapes with ✓/✗
+sparse (born-sparse `Table<Any>` far-key cell: the `glm_tbl_set_any`
+stop sequence over the register seam, `xqv`'s tagged-Any decode out of
+the i128 argument, the overflow-map `pcells` fallback, the Lua-line
+anchor) — and checks the load-bearing output shapes with ✓/✗
 per marker. The script's header carries the expected shapes; a ✗ maps
-to the landmines above (`xq` dying with `No symbol 'unsigned'` =
+to the landmines above (`xqv` dying with `No symbol 'unsigned'` =
 language sandwich stripped; `pcells` dying with `Invalid type
 combination in equality test` = the `$bufp` init gone; a missing
 pending-breakpoint stop = `breakpoint pending on` removed).

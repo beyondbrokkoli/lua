@@ -195,6 +195,160 @@ fn attach_dbg(code: &mut String, start: usize, node: usize) {
     }
 }
 
+// === The seam plan ====================================================
+// The ONE walk that numbers every table-seam instruction and names
+// every block's final LLVM label. Before this existed, the emitter
+// incremented a `ts` counter while a shadow "phi-tail probe"
+// re-simulated the same rule to predict cont-block names for phis —
+// two copies of one invariant, nothing enforcing agreement. The
+// register-seam change edited one copy (a get that stopped spilling
+// to a slot) and the other silently disagreed: loop-header phis named
+// bts1cont blocks the emitter never wrote (clang: "use of undefined
+// value") — cases/args_any_seam_phi_grow.lua pins that shape. Now
+// nothing counts during emission: both the phis' predecessor labels
+// and the emitters' seam numbers READ this plan, so they cannot
+// drift. A seam instruction the plan did not number dies loudly
+// here, at the plan, with the exact block and index — never as
+// invalid IR at clang.
+struct SeamPlan {
+    /// The seam number of each table-seam instruction, indexed
+    /// [block.id][instruction index] — `None` for non-seam
+    /// instructions.
+    numbers: Vec<Vec<Option<usize>>>,
+    /// Every block's final LLVM label: `b{id}`, or `bts{n}cont` when
+    /// the block's last seam instruction is a fast store (its
+    /// Dense/Sparse/Hybrid emission ends the current block and
+    /// continues in the cont block).
+    tails: Vec<String>,
+}
+
+impl SeamPlan {
+    /// The number of the seam instruction at (block, index). Every
+    /// TableGet / TableSet / TableSetFast is numbered by `plan_seams`
+    /// — a miss here is a new seam instruction the plan walk forgot,
+    /// and it dies at the site instead of mislabeling the IR.
+    fn number(&self, block: BlockId, ii: usize) -> usize {
+        self.numbers[block][ii].expect("the seam plan numbered every table-seam instruction")
+    }
+}
+
+/// Walk the program once and build the seam plan: uniform numbers for
+/// every table-seam instruction (per INSTRUCTION, not per spilled
+/// slot — the register face and the byte face number alike), and the
+/// final LLVM label each block's emission will end in.
+fn plan_seams(program: &IrProgram) -> SeamPlan {
+    let mut numbers: Vec<Vec<Option<usize>>> = program
+        .blocks
+        .iter()
+        .map(|b| vec![None; b.instrs.len()])
+        .collect();
+    let mut tails: Vec<String> = program
+        .blocks
+        .iter()
+        .map(|b| format!("b{}", b.id))
+        .collect();
+    let mut probe = 0usize;
+    for block in &program.blocks {
+        let mut last_fast = None;
+        for (ii, instr) in block.instrs.iter().enumerate() {
+            match instr {
+                Instruction::TableSetFast { .. } => {
+                    numbers[block.id][ii] = Some(probe);
+                    last_fast = Some(probe);
+                    probe += 1;
+                }
+                Instruction::TableGet { .. } | Instruction::TableSet { .. } => {
+                    numbers[block.id][ii] = Some(probe);
+                    probe += 1;
+                }
+                _ => {}
+            }
+        }
+        if let Some(n) = last_fast {
+            tails[block.id] = format!("bts{n}cont");
+        }
+    }
+    SeamPlan { numbers, tails }
+}
+
+/// The label-closure check — the belt to `SeamPlan`'s suspenders:
+/// every block label a `br` or a phi names must be a label the
+/// assembled module actually emits. The seam-counter desync this
+/// guards against used to surface as clang's bare "use of undefined
+/// value '%bts1cont'"; now it dies HERE, at the emitter, naming the
+/// dangling block. One direction only (referenced → defined): a
+/// defined-but-unreferenced label is valid IR (no function's
+/// `entry:` is ever referenced), a referenced-but-undefined one is
+/// not. SeamPlan makes the seam flavor of this impossible; this
+/// check makes EVERY flavor (a new emitter arm, a hand-routed
+/// branch) impossible to ship.
+fn assert_labels_closed(ir: &str) {
+    let mut defined: Vec<&str> = Vec::new();
+    let mut referenced: Vec<&str> = Vec::new();
+    for line in ir.lines() {
+        // Block labels sit at column 0 (`b0:`, `bts3cont:`, `entry:`).
+        // Everything else that could masquerade starts with a sigil
+        // (`@` globals, `!` metadata, `declare`/`define` never end a
+        // line with a bare colon).
+        if let Some(name) = line.strip_suffix(':')
+            && is_label_name(name)
+        {
+            defined.push(name);
+        } else if line.starts_with(' ') {
+            // References live only on indented code lines — br
+            // targets and phi predecessor pairs. String-pool constants
+            // ride column-0 `@`-lines, so a script literal containing
+            // "label %" can never false-positive.
+            scan_label_refs(line, &mut referenced);
+        }
+    }
+    for name in &referenced {
+        assert!(
+            defined.contains(name),
+            "IR emitter label desync: a br/phi names block '{name}', \
+             which the module never emits — the emitters and the block \
+             model disagree (see SeamPlan in backend.rs)"
+        );
+    }
+}
+
+fn is_label_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' || c == '.' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.')
+}
+
+fn is_label_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.'
+}
+
+/// Collect `label %name` (br, both forms) and `[%val, %name ]` (phi
+/// predecessor pairs) references off one indented code line.
+fn scan_label_refs<'a>(line: &'a str, out: &mut Vec<&'a str>) {
+    let mut rest = line;
+    while let Some(i) = rest.find("label %") {
+        rest = &rest[i + "label %".len()..];
+        let end = rest.find(|c: char| !is_label_char(c)).unwrap_or(rest.len());
+        out.push(&rest[..end]);
+        rest = &rest[end..];
+    }
+    // Phi pairs: `[ %v13, %b0 ]` — the `, %name ]` shape. Call and GEP
+    // argument lists never put `%` directly after the comma-space
+    // (a type always sits between), so the pattern is phi-specific.
+    let mut rest = line;
+    while let Some(i) = rest.find(", %") {
+        rest = &rest[i + ", %".len()..];
+        let end = rest.find(|c: char| !is_label_char(c)).unwrap_or(rest.len());
+        if rest[end..].starts_with(" ]") {
+            out.push(&rest[..end]);
+        }
+        rest = &rest[end..];
+    }
+}
+
 pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     let mut globals = String::new();
     let mut dbg = DebugMeta::new(&program.source_file);
@@ -221,6 +375,8 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     let mut needs_tbl_free_except_n_decl = false;
     let mut needs_tbl_get_decl = false;
     let mut needs_tbl_set_decl = false;
+    let mut needs_tbl_get_any_decl = false;
+    let mut needs_tbl_set_any_decl = false;
     let mut needs_str_len_decl = false;
     let mut needs_sys_alloc_count_decl = false;
     let mut needs_any_print_decl = false;
@@ -233,36 +389,16 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     // the thin .so. The anchor below closes that gap.
     let mut has_print = false;
     let mut needs_hdr_md = false;
-    let mut ts = 0usize;
     // The keep-array scratch counter: one entry alloca per multi-keep
     // call site (never inside a loop body's block — the entry slot is
     // reused by stores before each call).
     let mut ks = 0usize;
-    let tail: Vec<String> = {
-        let mut probe = 0usize;
-        let mut tails: Vec<String> = program
-            .blocks
-            .iter()
-            .map(|b| format!("b{}", b.id))
-            .collect();
-        for block in &program.blocks {
-            let mut last = None;
-            for instr in &block.instrs {
-                match instr {
-                    Instruction::TableSetFast { .. } => {
-                        last = Some(probe);
-                        probe += 1;
-                    }
-                    Instruction::TableGet { .. } | Instruction::TableSet { .. } => probe += 1,
-                    _ => {}
-                }
-            }
-            if let Some(k) = last {
-                tails[block.id] = format!("bts{}cont", k);
-            }
-        }
-        tails
-    };
+    // The seam plan — the single source the phi tails and the seam
+    // emitters both read (see SeamPlan above). The tail borrow is the
+    // phis' half; `seam_plan.number(...)` at the three seam dispatch
+    // arms is the emitters' half. One walk, no second counter.
+    let seam_plan = plan_seams(program);
+    let tail: &[String] = &seam_plan.tails;
 
     let mut allocas = String::new();
     let mut code = String::new();
@@ -355,7 +491,14 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                     ));
                 }
                 Instruction::TableGet(g) => {
-                    emit_cell_get(g, &mut allocas, &mut code, &mut ts, &mut needs_tbl_get_decl);
+                    emit_cell_get(
+                        g,
+                        &mut allocas,
+                        &mut code,
+                        seam_plan.number(block.id, ii),
+                        &mut needs_tbl_get_decl,
+                        &mut needs_tbl_get_any_decl,
+                    );
                 }
                 Instruction::TableReserve { table, bound } => {
                     needs_tbl_reserve_decl = true;
@@ -370,13 +513,21 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                         s,
                         &mut allocas,
                         &mut code,
-                        &mut ts,
+                        seam_plan.number(block.id, ii),
                         &mut needs_hdr_md,
                         &mut needs_tbl_set_decl,
+                        &mut needs_tbl_set_any_decl,
                     );
                 }
                 Instruction::TableSet(s) => {
-                    emit_cell_set(s, &mut allocas, &mut code, &mut ts, &mut needs_tbl_set_decl);
+                    emit_cell_set(
+                        s,
+                        &mut allocas,
+                        &mut code,
+                        seam_plan.number(block.id, ii),
+                        &mut needs_tbl_set_decl,
+                        &mut needs_tbl_set_any_decl,
+                    );
                 }
                 Instruction::TableFree { table } => {
                     trace::compiler_trace_signal(trace::TRACE_OFFLOAD_EMIT);
@@ -465,19 +616,19 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                     code.push_str(&format!("  %v{} = xor i1 %v{}, 1\n", target.id, source.id));
                 }
                 Instruction::Phi(PhiRegs::Int { target, args }) => {
-                    emit_phi(target, args, &tail, &mut code)
+                    emit_phi(target, args, tail, &mut code)
                 }
                 Instruction::Phi(PhiRegs::Float { target, args }) => {
-                    emit_phi(target, args, &tail, &mut code)
+                    emit_phi(target, args, tail, &mut code)
                 }
                 Instruction::Phi(PhiRegs::Bool { target, args }) => {
-                    emit_phi(target, args, &tail, &mut code)
+                    emit_phi(target, args, tail, &mut code)
                 }
                 Instruction::Phi(PhiRegs::Ptr { target, args }) => {
-                    emit_phi(target, args, &tail, &mut code)
+                    emit_phi(target, args, tail, &mut code)
                 }
                 Instruction::Phi(PhiRegs::Any { target, args }) => {
-                    emit_phi(target, args, &tail, &mut code)
+                    emit_phi(target, args, tail, &mut code)
                 }
                 Instruction::Print { operands } => {
                     has_print = true;
@@ -702,6 +853,12 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     if needs_tbl_set_decl {
         head.push_str("declare void @glm_tbl_set(ptr, i64, ptr)\n");
     }
+    if needs_tbl_get_any_decl {
+        head.push_str("declare i128 @glm_tbl_get_any(ptr, i64)\n");
+    }
+    if needs_tbl_set_any_decl {
+        head.push_str("declare void @glm_tbl_set_any(ptr, i64, i128)\n");
+    }
     if needs_str_len_decl {
         head.push_str("declare i64 @glm_str_len(ptr)\n");
     }
@@ -743,6 +900,8 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
         || needs_tbl_free_except_n_decl
         || needs_tbl_get_decl
         || needs_tbl_set_decl
+        || needs_tbl_get_any_decl
+        || needs_tbl_set_any_decl
         || needs_str_len_decl
         || needs_sys_alloc_count_decl
         || needs_any_print_decl
@@ -782,10 +941,12 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
         String::new()
     };
     let dbg_tail = dbg.map(|d| d.tail()).unwrap_or_default();
-    Ok(format!(
+    let ir = format!(
         "{}{}{}{}{}{}{}",
         globals, registry, head, anchor, out, md, dbg_tail
-    ))
+    );
+    assert_labels_closed(&ir);
+    Ok(ir)
 }
 
 fn emit_move(m: &MoveRegs, code: &mut String) {
@@ -805,40 +966,95 @@ fn emit_cell_get(
     g: &CellGet,
     allocas: &mut String,
     code: &mut String,
-    ts: &mut usize,
+    seam: usize,
     needs_tbl_get_decl: &mut bool,
+    needs_tbl_get_any_decl: &mut bool,
 ) {
     match g {
         CellGet::Int {
             target,
             table,
             index,
-        } => emit_table_get(target, table, index, allocas, code, ts, needs_tbl_get_decl),
+        } => emit_table_get(
+            target,
+            table,
+            index,
+            allocas,
+            code,
+            seam,
+            needs_tbl_get_decl,
+            needs_tbl_get_any_decl,
+        ),
         CellGet::Float {
             target,
             table,
             index,
-        } => emit_table_get(target, table, index, allocas, code, ts, needs_tbl_get_decl),
+        } => emit_table_get(
+            target,
+            table,
+            index,
+            allocas,
+            code,
+            seam,
+            needs_tbl_get_decl,
+            needs_tbl_get_any_decl,
+        ),
         CellGet::Bool {
             target,
             table,
             index,
-        } => emit_table_get(target, table, index, allocas, code, ts, needs_tbl_get_decl),
+        } => emit_table_get(
+            target,
+            table,
+            index,
+            allocas,
+            code,
+            seam,
+            needs_tbl_get_decl,
+            needs_tbl_get_any_decl,
+        ),
         CellGet::Ptr {
             target,
             table,
             index,
-        } => emit_table_get(target, table, index, allocas, code, ts, needs_tbl_get_decl),
+        } => emit_table_get(
+            target,
+            table,
+            index,
+            allocas,
+            code,
+            seam,
+            needs_tbl_get_decl,
+            needs_tbl_get_any_decl,
+        ),
         CellGet::Byte {
             target,
             table,
             index,
-        } => emit_table_get(target, table, index, allocas, code, ts, needs_tbl_get_decl),
+        } => emit_table_get(
+            target,
+            table,
+            index,
+            allocas,
+            code,
+            seam,
+            needs_tbl_get_decl,
+            needs_tbl_get_any_decl,
+        ),
         CellGet::Any {
             target,
             table,
             index,
-        } => emit_table_get(target, table, index, allocas, code, ts, needs_tbl_get_decl),
+        } => emit_table_get(
+            target,
+            table,
+            index,
+            allocas,
+            code,
+            seam,
+            needs_tbl_get_decl,
+            needs_tbl_get_any_decl,
+        ),
     }
 }
 
@@ -847,9 +1063,10 @@ fn emit_cell_set_fast(
     s: &CellSetFast,
     allocas: &mut String,
     code: &mut String,
-    ts: &mut usize,
+    seam: usize,
     needs_hdr_md: &mut bool,
     needs_tbl_set_decl: &mut bool,
+    needs_tbl_set_any_decl: &mut bool,
 ) {
     match s {
         CellSetFast::Int {
@@ -864,9 +1081,10 @@ fn emit_cell_set_fast(
             layout,
             allocas,
             code,
-            ts,
+            seam,
             needs_hdr_md,
             needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
         ),
         CellSetFast::Float {
             table,
@@ -880,9 +1098,10 @@ fn emit_cell_set_fast(
             layout,
             allocas,
             code,
-            ts,
+            seam,
             needs_hdr_md,
             needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
         ),
         CellSetFast::Bool {
             table,
@@ -896,9 +1115,10 @@ fn emit_cell_set_fast(
             layout,
             allocas,
             code,
-            ts,
+            seam,
             needs_hdr_md,
             needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
         ),
         CellSetFast::Ptr {
             table,
@@ -912,9 +1132,10 @@ fn emit_cell_set_fast(
             layout,
             allocas,
             code,
-            ts,
+            seam,
             needs_hdr_md,
             needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
         ),
         CellSetFast::Byte {
             table,
@@ -928,9 +1149,10 @@ fn emit_cell_set_fast(
             layout,
             allocas,
             code,
-            ts,
+            seam,
             needs_hdr_md,
             needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
         ),
         CellSetFast::Any {
             table,
@@ -944,9 +1166,10 @@ fn emit_cell_set_fast(
             layout,
             allocas,
             code,
-            ts,
+            seam,
             needs_hdr_md,
             needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
         ),
     }
 }
@@ -956,40 +1179,95 @@ fn emit_cell_set(
     s: &CellSet,
     allocas: &mut String,
     code: &mut String,
-    ts: &mut usize,
+    seam: usize,
     needs_tbl_set_decl: &mut bool,
+    needs_tbl_set_any_decl: &mut bool,
 ) {
     match s {
         CellSet::Int {
             table,
             index,
             value,
-        } => emit_table_set(table, index, value, allocas, code, ts, needs_tbl_set_decl),
+        } => emit_table_set(
+            table,
+            index,
+            value,
+            allocas,
+            code,
+            seam,
+            needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
+        ),
         CellSet::Float {
             table,
             index,
             value,
-        } => emit_table_set(table, index, value, allocas, code, ts, needs_tbl_set_decl),
+        } => emit_table_set(
+            table,
+            index,
+            value,
+            allocas,
+            code,
+            seam,
+            needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
+        ),
         CellSet::Bool {
             table,
             index,
             value,
-        } => emit_table_set(table, index, value, allocas, code, ts, needs_tbl_set_decl),
+        } => emit_table_set(
+            table,
+            index,
+            value,
+            allocas,
+            code,
+            seam,
+            needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
+        ),
         CellSet::Ptr {
             table,
             index,
             value,
-        } => emit_table_set(table, index, value, allocas, code, ts, needs_tbl_set_decl),
+        } => emit_table_set(
+            table,
+            index,
+            value,
+            allocas,
+            code,
+            seam,
+            needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
+        ),
         CellSet::Byte {
             table,
             index,
             value,
-        } => emit_table_set(table, index, value, allocas, code, ts, needs_tbl_set_decl),
+        } => emit_table_set(
+            table,
+            index,
+            value,
+            allocas,
+            code,
+            seam,
+            needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
+        ),
         CellSet::Any {
             table,
             index,
             value,
-        } => emit_table_set(table, index, value, allocas, code, ts, needs_tbl_set_decl),
+        } => emit_table_set(
+            table,
+            index,
+            value,
+            allocas,
+            code,
+            seam,
+            needs_tbl_set_decl,
+            needs_tbl_set_any_decl,
+        ),
     }
 }
 
@@ -1147,13 +1425,28 @@ fn emit_table_get<E: Repr>(
     index: &Reg<Int>,
     allocas: &mut String,
     code: &mut String,
-    ts: &mut usize,
+    seam: usize,
     needs_tbl_get_decl: &mut bool,
+    needs_tbl_get_any_decl: &mut bool,
 ) {
+    if E::REG_FACE {
+        // The register seam: the tagged cell crosses whole in the i128
+        // return — no dst slot, no alignment promise about caller
+        // memory. The seam number arrives from the plan whether this
+        // branch uses it or not: numbering is per instruction, the
+        // plan's one rule.
+        *needs_tbl_get_any_decl = true;
+        code.push_str(&format!(
+            "  %v{target} = call i128 @glm_tbl_get_any(ptr %v{table}, i64 %v{index})\n",
+            target = target.id,
+            table = table.id,
+            index = index.id
+        ));
+        return;
+    }
     *needs_tbl_get_decl = true;
     let ety = E::storage();
-    let f = *ts;
-    *ts += 1;
+    let f = seam;
 
     allocas.push_str(&format!("  %ts{f}.dst = alloca {ety}\n", f = f, ety = ety));
 
@@ -1173,15 +1466,11 @@ fn emit_table_get<E: Repr>(
             target = target.id
         ));
     } else {
-        // An i128 cell loads from an 8-aligned alloca: the explicit
-        // align keeps LLVM from assuming the i128 ABI alignment (16).
-        let align = if E::esize() == 16 { ", align 8" } else { "" };
         code.push_str(&format!(
-            "  %v{target} = load {ety}, ptr %ts{f}.dst{align}\n",
+            "  %v{target} = load {ety}, ptr %ts{f}.dst\n",
             target = target.id,
             ety = ety,
-            f = f,
-            align = align
+            f = f
         ));
     }
 }
@@ -1194,14 +1483,14 @@ fn emit_table_set_fast<E: Repr>(
     layout: &LayoutVerdict,
     allocas: &mut String,
     code: &mut String,
-    ts: &mut usize,
+    seam: usize,
     needs_hdr_md: &mut bool,
     needs_tbl_set_decl: &mut bool,
+    needs_tbl_set_any_decl: &mut bool,
 ) {
     *needs_hdr_md = true;
     let ety = E::storage();
-    let f = *ts;
-    *ts += 1;
+    let f = seam;
 
     let cast_var = format!("%ts{}.c", f);
 
@@ -1220,35 +1509,24 @@ fn emit_table_set_fast<E: Repr>(
         format!("%v{value}", value = value.id)
     };
 
-    allocas.push_str(&format!("  %ts{f}.valp = alloca {ety}\n", f = f, ety = ety));
+    // The register face never spills: the tagged cell crosses whole
+    // in the i128 argument, so no layout verdict needs a valp slot.
+    if !E::REG_FACE {
+        allocas.push_str(&format!("  %ts{f}.valp = alloca {ety}\n", f = f, ety = ety));
+    }
 
     match layout {
         LayoutVerdict::Dense => {
-            // The buffer is 8-aligned; an i128 store names that align
-            // explicitly or LLVM assumes the i128 ABI alignment (16).
-            let align = E::buf_store_align();
+            // The buffer store names no align clause: LLVM assumes the
+            // natural alignment, and the runtime's elem_layout demands
+            // exactly that of the span (16 for the i128 cell, 8 for
+            // the machine word) — promise and allocation agree by
+            // construction.
             code.push_str(&format!(
                 "{val_cast}\
                    %ts{f}.d = load ptr, ptr %v{table}, !alias.scope !0\n\
                    %ts{f}.s = getelementptr inbounds {ety}, ptr %ts{f}.d, i64 %v{index}\n\
-                   store {ety} {val_use}, ptr %ts{f}.s{align}, !noalias !0\n\
-                   br label %bts{f}cont\n\n\
-                 bts{f}cont:\n",
-                val_cast = val_cast,
-                f = f,
-                table = table.id,
-                index = index.id,
-                ety = ety,
-                val_use = val_use,
-                align = align
-            ));
-        }
-        LayoutVerdict::Sparse => {
-            *needs_tbl_set_decl = true;
-            code.push_str(&format!(
-                "{val_cast}\
-                   store {ety} {val_use}, ptr %ts{f}.valp\n\
-                   call void @glm_tbl_set(ptr %v{table}, i64 %v{index}, ptr %ts{f}.valp)\n\
+                   store {ety} {val_use}, ptr %ts{f}.s, !noalias !0\n\
                    br label %bts{f}cont\n\n\
                  bts{f}cont:\n",
                 val_cast = val_cast,
@@ -1259,9 +1537,26 @@ fn emit_table_set_fast<E: Repr>(
                 val_use = val_use
             ));
         }
+        LayoutVerdict::Sparse => {
+            code.push_str(&format!(
+                "{val_cast}\
+                   {checked}\
+                   br label %bts{f}cont\n\n\
+                 bts{f}cont:\n",
+                val_cast = val_cast,
+                checked = checked_store::<E>(
+                    f,
+                    table,
+                    index,
+                    &val_use,
+                    ety,
+                    needs_tbl_set_decl,
+                    needs_tbl_set_any_decl
+                ),
+                f = f
+            ));
+        }
         _ => {
-            *needs_tbl_set_decl = true;
-            let align = E::buf_store_align();
             code.push_str(&format!(
                 "{val_cast}\
                    %ts{f}.modep = getelementptr inbounds i8, ptr %v{table}, i64 32\n\
@@ -1271,22 +1566,66 @@ fn emit_table_set_fast<E: Repr>(
                  bts{f}dense:\n\
                    %ts{f}.d = load ptr, ptr %v{table}, !alias.scope !0\n\
                    %ts{f}.s = getelementptr inbounds {ety}, ptr %ts{f}.d, i64 %v{index}\n\
-                   store {ety} {val_use}, ptr %ts{f}.s{align}, !noalias !0\n\
+                   store {ety} {val_use}, ptr %ts{f}.s, !noalias !0\n\
                    br label %bts{f}cont\n\n\
                  bts{f}sparse:\n\
-                   store {ety} {val_use}, ptr %ts{f}.valp\n\
-                   call void @glm_tbl_set(ptr %v{table}, i64 %v{index}, ptr %ts{f}.valp)\n\
+                   {checked}\
                    br label %bts{f}cont\n\n\
                  bts{f}cont:\n",
                 val_cast = val_cast,
+                checked = checked_store::<E>(
+                    f,
+                    table,
+                    index,
+                    &val_use,
+                    ety,
+                    needs_tbl_set_decl,
+                    needs_tbl_set_any_decl
+                ),
                 f = f,
                 table = table.id,
                 index = index.id,
                 ety = ety,
-                val_use = val_use,
-                align = align
+                val_use = val_use
             ));
         }
+    }
+}
+
+/// The checked-store half of the fast path (the Sparse verdict's body
+/// and the Hybrid verdict's sparse arm): the register face calls
+/// glm_tbl_set_any with the value whole; the byte face spills to its
+/// valp slot first. The caller owns the branching scaffolding around
+/// the store — these are the store's own lines.
+#[allow(clippy::too_many_arguments)]
+fn checked_store<E: Repr>(
+    f: usize,
+    table: &Reg<Ptr>,
+    index: &Reg<Int>,
+    val_use: &str,
+    ety: &str,
+    needs_tbl_set_decl: &mut bool,
+    needs_tbl_set_any_decl: &mut bool,
+) -> String {
+    if E::REG_FACE {
+        *needs_tbl_set_any_decl = true;
+        format!(
+            "  call void @glm_tbl_set_any(ptr %v{table}, i64 %v{index}, i128 {v})\n",
+            table = table.id,
+            index = index.id,
+            v = val_use
+        )
+    } else {
+        *needs_tbl_set_decl = true;
+        format!(
+            "  store {ety} {v}, ptr %ts{f}.valp\n\
+               call void @glm_tbl_set(ptr %v{table}, i64 %v{index}, ptr %ts{f}.valp)\n",
+            ety = ety,
+            v = val_use,
+            f = f,
+            table = table.id,
+            index = index.id
+        )
     }
 }
 
@@ -1297,13 +1636,27 @@ fn emit_table_set<E: Repr>(
     value: &Reg<E>,
     allocas: &mut String,
     code: &mut String,
-    ts: &mut usize,
+    seam: usize,
     needs_tbl_set_decl: &mut bool,
+    needs_tbl_set_any_decl: &mut bool,
 ) {
+    if E::REG_FACE {
+        // The register seam: the tagged cell crosses whole in the i128
+        // argument — no valp spill, no alignment promise about caller
+        // memory. The seam number arrives from the plan whether this
+        // branch uses it or not: numbering is per instruction.
+        *needs_tbl_set_any_decl = true;
+        code.push_str(&format!(
+            "  call void @glm_tbl_set_any(ptr %v{table}, i64 %v{index}, i128 %v{value})\n",
+            table = table.id,
+            index = index.id,
+            value = value.id
+        ));
+        return;
+    }
     *needs_tbl_set_decl = true;
     let ety = E::storage();
-    let f = *ts;
-    *ts += 1;
+    let f = seam;
 
     allocas.push_str(&format!("  %ts{f}.valp = alloca {ety}\n", f = f, ety = ety));
 
@@ -1315,13 +1668,11 @@ fn emit_table_set<E: Repr>(
             value = value.id
         ));
     } else {
-        let align = E::buf_store_align();
         code.push_str(&format!(
-            "  store {ety} %v{value}, ptr %ts{f}.valp{align}\n",
+            "  store {ety} %v{value}, ptr %ts{f}.valp\n",
             ety = ety,
             value = value.id,
-            f = f,
-            align = align
+            f = f
         ));
     }
     code.push_str(&format!(
@@ -1561,5 +1912,57 @@ fn cmp_op<T: Repr>(
             left.id,
             right.id
         ));
+    }
+}
+
+#[cfg(test)]
+mod label_closure_tests {
+    use super::assert_labels_closed;
+
+    #[test]
+    fn closed_module_passes() {
+        // The seam shape exactly: a loop-header phi whose back-edge
+        // predecessor is a fast store's cont block, plus the entry
+        // label nothing references — closed in both scan directions.
+        assert_labels_closed(
+            "define ptr @f() {\n\
+             entry:\n\
+             \x20 br label %b0\n\
+             \nb0:\n\
+             \x20 %v1 = phi i64 [ 0, %entry ], [ 1, %bts0cont ]\n\
+             \x20 br label %bts0cont\n\
+             \nbts0cont:\n\
+             \x20 ret ptr null\n\
+             }\n",
+        );
+    }
+
+    #[test]
+    fn string_pool_literals_cannot_false_positive() {
+        // A script literal containing the reference spellings rides a
+        // column-0 @-line: the scanner must ignore it.
+        assert_labels_closed(
+            "@.str = constant [9 x i8] c\"label %x\\00\"\n\
+             define ptr @f() {\n\
+             entry:\n\
+             \x20 ret ptr null\n\
+             }\n",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "names block 'b1'")]
+    fn dangling_reference_panics() {
+        // The seam-counter desync's exact shape: the phi names a cont
+        // block the emitter never wrote.
+        assert_labels_closed(
+            "define ptr @f() {\n\
+             entry:\n\
+             \x20 br label %b0\n\
+             \nb0:\n\
+             \x20 %v1 = phi i64 [ 0, %entry ], [ 1, %b1 ]\n\
+             \x20 ret ptr null\n\
+             }\n",
+        );
     }
 }
