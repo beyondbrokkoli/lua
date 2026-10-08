@@ -185,6 +185,7 @@ impl Analyzer {
             Expr::TableCtor(entries) => {
                 let id = self.lattice.sites[&(expr as *const Expr)];
                 let mut first_elem_ty: Option<Ty> = None;
+                let mut row_sites: Vec<usize> = Vec::new();
                 for (ei, (k, e)) in entries.iter().enumerate() {
                     // The slot map: a literal-key entry holding a
                     // constructor names the row born at that slot —
@@ -229,6 +230,13 @@ impl Analyzer {
                     }
                     if matches!(t, Tbl(_)) {
                         self.reads.tbl_value_stores.insert(id);
+                        for s in esites
+                            .iter()
+                            .copied()
+                            .filter(|s| !is_root(s) && !is_ghost(s))
+                        {
+                            row_sites.push(s);
+                        }
                         if let Some(&child_site) = self.lattice.sites.get(&(e as *const Expr)) {
                             signal!(rec.on(), trace::TRACE_INFER_TBL_CHILD);
                             self.lattice
@@ -334,9 +342,11 @@ impl Analyzer {
                                 // cell at the join — the site flows as
                                 // Table<Any> from here (a Table in the
                                 // mix stays the Conflict above; cells
-                                // hold scalars).
+                                // hold scalars). The ctor line is the
+                                // adoption's provenance for this site.
                                 if matches!(joined, Any) && !matches!(expected, Any) {
                                     self.probe(rec, trace::TRACE_CHK_ANY_MIXED_CTOR);
+                                    self.note_adopt(id, self.ctor_lines[id]);
                                 }
                                 if joined != *expected {
                                     first_elem_ty = Some(joined);
@@ -353,6 +363,30 @@ impl Analyzer {
                     signal!(rec.on(), trace::TRACE_INFER_TBL_PENDING);
                     first_elem_ty.unwrap_or(Pending)
                 };
+                // The layer push — nested adoption, one rule everywhere:
+                // the layer's converged element rides INTO every row
+                // site (decide), so rows whose scalar kinds mix
+                // physically become Any-celled and the layer's
+                // Table<Table<Any>> is honest at the span level (each
+                // row's entries then pack through glm_any_from_*). A
+                // no-op for uniform layers; row SHAPES mixing (a scalar
+                // row beside a table row) never reaches it — that join
+                // conflicted above and left the site dead. Fn-deferred
+                // rows keep their call-site resolution.
+                if let Tbl(inner) = &resolved
+                    && contains_any(inner)
+                {
+                    for s in std::mem::take(&mut row_sites) {
+                        if self.lattice.site_elem[s] != **inner
+                            && !self.fn_body_sites.contains(&s)
+                            && !self.fn_param_sites.contains(&s)
+                        {
+                            self.probe(rec, trace::TRACE_CHK_ANY_MIXED_ROWS);
+                            self.note_adopt(s, self.ctor_lines[id]);
+                            self.decide(rec, s, inner);
+                        }
+                    }
+                }
                 Ok((
                     Tbl(Box::new(resolved)),
                     BTreeSet::from([id]),
@@ -492,7 +526,9 @@ impl Analyzer {
                 // TABLE-valued read mints: a scalar cell read copies a
                 // value out of the row, owns no header, and a token
                 // here would fire a TableFree through a non-pointer
-                // register once its base died. Ghosts may enter lineage
+                // register once its base died — an ANY cell read is
+                // exactly such a copy (the dynamic cell rides a
+                // register, never a header). Ghosts may enter lineage
                 // as origin keys (a chained read `c = b[0]` tracks b's
                 // ghost), keeping a parent row's death vetoed while
                 // its rows are borrowed — but they never reach
@@ -501,7 +537,7 @@ impl Analyzer {
                 // affine sole-holding: two reads of the same slot are
                 // the same header, so the second owning bind is
                 // refused.
-                let aliases = if lineage.is_empty() || scalar(&r) || matches!(r, Conflict) {
+                let aliases = if lineage.is_empty() || scalarish(&r) || matches!(r, Conflict) {
                     BTreeSet::new()
                 } else {
                     signal!(rec.on(), trace::TRACE_ROW_GHOST_MINT);

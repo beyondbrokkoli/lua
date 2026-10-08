@@ -211,6 +211,11 @@ pub struct ShapeFacts {
     /// ctor site id -> line (parallel to `sites`' id space).
     pub stmt_lines: BTreeMap<*const Stmt, usize>,
     pub ctor_lines: Vec<usize>,
+    /// The adoption provenance: name -> the line of the FIRST witness
+    /// that flipped one of its sites' element to Any (analyzer-recorded;
+    /// the checker's typed-position refusals surface it so the error
+    /// names the cause, not just where the conflict showed up).
+    pub adopt_lines: BTreeMap<String, usize>,
     pub diagnostics: Vec<String>,
 }
 

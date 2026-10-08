@@ -415,6 +415,32 @@ impl<'a> TypeChecker<'a> {
                 }
                 let actual = self.check_expr(expr)?;
                 if expected != actual {
+                    // The rebind admission: the name's element and the
+                    // incoming table's element are both concrete but
+                    // join to a THIRD element (a scalar-kind mix —
+                    // either side already dynamic, or two kinds
+                    // differing) — the lattice's rebind-linked join
+                    // speaking. Rebind links are witnesses like any
+                    // other, so the sites linked and the name stays
+                    // dynamic. Mirrors the ctor arm's admission: the
+                    // joined type types the name honestly Table<Any>;
+                    // it never pretends a dynamic object is scalar
+                    // (that direction has no admission anywhere).
+                    if let (StaticType::Table(e1), StaticType::Table(e2)) = (&expected, &actual)
+                        && let Some(joined) = static_join(e1, e2)
+                        && joined != **e1
+                        && joined != **e2
+                    {
+                        signal!(trace::TRACE_CHK_ANY_REBIND);
+                        let resolved = StaticType::Table(Box::new(joined));
+                        for scope in self.scopes.iter_mut().rev() {
+                            if scope.contains_key(name) {
+                                scope.insert(name.clone(), resolved);
+                                break;
+                            }
+                        }
+                        return Ok(());
+                    }
                     // A rebind unifies: an unwitnessed ctor's element
                     // binds to the name's, so `t = {}` re-opens the
                     // name under its own element type — the displaced
@@ -589,9 +615,11 @@ impl<'a> TypeChecker<'a> {
             key_ty
         };
         if key_ty != StaticType::Integer {
+            let note = self.any_provenance_note(&key_ty, key);
             return Err(format!(
-                "Type Error: table index must be an Integer, got {}",
-                type_name(&key_ty)
+                "Type Error: table index must be an Integer, got {}{}",
+                type_name(&key_ty),
+                note.unwrap_or_default()
             ));
         }
         Ok(())
@@ -603,10 +631,12 @@ impl<'a> TypeChecker<'a> {
         // cell) pins to Boolean — `if arg[0] then` means Bool cells.
         let ty = self.pin_bool(&ty)?;
         if ty != StaticType::Boolean {
+            let note = self.any_provenance_note(&ty, condition);
             return Err(format!(
-                "Type Error: '{}' condition must be a Boolean, got {}",
+                "Type Error: '{}' condition must be a Boolean, got {}{}",
                 kw,
-                type_name(&ty)
+                type_name(&ty),
+                note.unwrap_or_default()
             ));
         }
         Ok(())
@@ -718,7 +748,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::IntDiv | BinOp::Mod => {
-                        self.numeric_operand(&l, &r, op)
+                        self.numeric_operand(&l, &r, op, left, right)
                     }
                     BinOp::Div => {
                         // An unknown operand pins to its partner before
@@ -734,12 +764,18 @@ impl<'a> TypeChecker<'a> {
                                 StaticType::Integer | StaticType::Float
                             )
                         ) {
-                            return Err("Type Error: '/' requires numeric operands".to_string());
+                            let note = self
+                                .any_provenance_note(&l, left)
+                                .or_else(|| self.any_provenance_note(&r, right));
+                            return Err(format!(
+                                "Type Error: '/' requires numeric operands{}",
+                                note.unwrap_or_default()
+                            ));
                         }
                         Ok(StaticType::Float)
                     }
                     BinOp::LessThan | BinOp::GreaterThan | BinOp::LessEq | BinOp::GreaterEq => {
-                        self.numeric_operand(&l, &r, op)?;
+                        self.numeric_operand(&l, &r, op, left, right)?;
                         Ok(StaticType::Boolean)
                     }
                     BinOp::Equal | BinOp::NotEqual => {
@@ -982,6 +1018,8 @@ impl<'a> TypeChecker<'a> {
         l: &StaticType,
         r: &StaticType,
         op: &BinOp,
+        l_expr: &Expr,
+        r_expr: &Expr,
     ) -> Result<StaticType, String> {
         // Usage inference: an unknown operand (a boundary cell, a bare
         // local) takes its partner's numeric type before the demand.
@@ -995,10 +1033,18 @@ impl<'a> TypeChecker<'a> {
                     bin_op_name(op)
                 ))
             }
-            _ => Err(format!(
-                "Type Error: '{}' requires numeric operands",
-                bin_op_name(op)
-            )),
+            _ => {
+                // An adopted operand lands here: the read surfaces the
+                // conflict, the adopting store caused it — name both.
+                let note = self
+                    .any_provenance_note(&l, l_expr)
+                    .or_else(|| self.any_provenance_note(&r, r_expr));
+                Err(format!(
+                    "Type Error: '{}' requires numeric operands{}",
+                    bin_op_name(op),
+                    note.unwrap_or_default()
+                ))
+            }
         }
     }
 }
@@ -1106,6 +1152,34 @@ impl<'a> TypeChecker<'a> {
         Ok(())
     }
 
+    /// The adoption provenance note for a typed-position refusal: the
+    /// operand resolves to Any through a name the analyzer watched go
+    /// dynamic, so the error names the witness line too — the CAUSE
+    /// (the adopting store or mixed constructor), not just where the
+    /// conflict surfaced (this read). None when the operand is not
+    /// Any-through-a-name or the name carries no recorded witness
+    /// (the boundary's own Any resolution names no line — the
+    /// boundary IS the opt-in).
+    fn any_provenance_note(&self, ty: &StaticType, expr: &Expr) -> Option<String> {
+        if !matches!(self.resolve_var(ty), StaticType::Any) {
+            return None;
+        }
+        let name = match expr {
+            Expr::Identifier(n) => n,
+            Expr::Index { obj, .. } => match obj.as_ref() {
+                Expr::Identifier(n) => n,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let line = self.shape.adopt_lines.get(name)?;
+        signal!(trace::TRACE_CHK_ANY_PROVENANCE);
+        Some(format!(
+            " — '{name}' went dynamic at line {line} (the scalar-kind mix on its cells; \
+             adoption is name-global)"
+        ))
+    }
+
     fn resolve_through(substitutions: &BTreeMap<usize, StaticType>, ty: &StaticType) -> StaticType {
         match ty {
             StaticType::Unknown(id) => match substitutions.get(id) {
@@ -1184,6 +1258,41 @@ fn types_compatible(l: &StaticType, r: &StaticType) -> bool {
         (StaticType::Table(e1), StaticType::Table(e2)) => types_compatible(e1, e2),
         _ => false,
     }
+}
+
+/// The checker's mirror of the analyzer's element join (join_ty): two
+/// concrete elements that mix scalar kinds — directly or through
+/// table layers — join to the dynamic cell instead of conflicting.
+/// None = a side is unresolved (the caller's unify path binds it) or
+/// the join is a genuine conflict (shapes disagree); Some(side) for
+/// equal/absorption cases (the caller's inequality checks decide
+/// whether an admission is happening at all).
+fn static_join(l: &StaticType, r: &StaticType) -> Option<StaticType> {
+    use crate::shape::{Ty, join_ty};
+    fn to_ty(t: &StaticType) -> Option<Ty> {
+        Some(match t {
+            StaticType::Integer => Ty::Int,
+            StaticType::Float => Ty::Flt,
+            StaticType::Boolean => Ty::Bool,
+            StaticType::String => Ty::Str,
+            StaticType::Any => Ty::Any,
+            StaticType::Table(inner) => Ty::Tbl(Box::new(to_ty(inner)?)),
+            StaticType::Unknown(_) => return None,
+        })
+    }
+    fn to_static(t: &Ty) -> Option<StaticType> {
+        Some(match t {
+            Ty::Int => StaticType::Integer,
+            Ty::Flt => StaticType::Float,
+            Ty::Bool => StaticType::Boolean,
+            Ty::Str => StaticType::String,
+            Ty::Any => StaticType::Any,
+            Ty::Tbl(inner) => StaticType::Table(Box::new(to_static(inner)?)),
+            Ty::Pending | Ty::Conflict => return None,
+        })
+    }
+    let joined = join_ty(&to_ty(l)?, &to_ty(r)?);
+    to_static(&joined)
 }
 
 fn type_name(ty: &StaticType) -> String {

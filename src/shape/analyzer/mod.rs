@@ -9,7 +9,7 @@ use super::core::{
 };
 use super::facts::ShapeFacts;
 use super::helpers::{const_key_value, extract_guard, merge_table_scopes};
-use super::ty::{Ty, arith_ty, join_ty, scalar};
+use super::ty::{Ty, arith_ty, contains_any, join_ty, scalar, scalarish};
 use Ty::{Any, Bool, Conflict, Flt, Int, Pending, Str, Tbl};
 // The boundary seed mints its element Pending — children resolve their
 // own Ints through the flat re-export below.
@@ -166,6 +166,13 @@ struct LatticeState {
     // again — through its origin OR its housing — would touch freed
     // memory, so later reads refuse.
     claimed_ghosts: BTreeSet<usize>,
+    // The adoption ledger: site -> the FIRST witness line that flipped
+    // its element to Any (min-insert — the cause, not the latest
+    // witness). Recorded wherever a flip is caused (the ctor join, a
+    // store, a rebind-linked exchange) and read out per-name at
+    // into_facts — the checker's provenance surfacing names the line a
+    // typed-read refusal should blame.
+    adopt_witness: BTreeMap<usize, usize>,
 }
 
 struct GhostMint {
@@ -477,6 +484,7 @@ pub fn analyze(ctx: &AnalysisContext<'_>) -> ShapeFacts {
             ghost_site: BTreeMap::new(),
             housed_ghosts: BTreeSet::new(),
             claimed_ghosts: BTreeSet::new(),
+            adopt_witness: BTreeMap::new(),
         },
         own: OwnershipState {
             free_sites: BTreeSet::new(),
@@ -572,7 +580,31 @@ pub fn analyze(ctx: &AnalysisContext<'_>) -> ShapeFacts {
     }
     a.plan_stmt_temp_frees(ctx.ast);
 
-    let mut facts = a.into_recorded().into_facts(n);
+    // The per-name adoption provenance, folded off the recording
+    // pass's final scopes: for each binding, the EARLIEST witness line
+    // among its sites' Any flips (the cause, not the latest witness —
+    // a name that went dynamic at line 2 and saw more dynamic stores
+    // at line 8 still names line 2). Innermost scope wins on shadowed
+    // names, matching how the checker resolves reads.
+    let adopt_lines: BTreeMap<String, usize> = {
+        let mut m = BTreeMap::new();
+        for scope in a.walk.scopes.iter() {
+            for (name, shape) in scope {
+                let mut best: Option<usize> = None;
+                for s in shape.aliases.iter() {
+                    if let Some(&l) = a.lattice.adopt_witness.get(s) {
+                        best = Some(best.map_or(l, |b: usize| b.min(l)));
+                    }
+                }
+                if let Some(l) = best {
+                    m.insert(name.clone(), l);
+                }
+            }
+        }
+        m
+    };
+
+    let mut facts = a.into_recorded(adopt_lines).into_facts(n);
     // The pure-AST scan: which outer names each inlined body rebinds.
     facts.fn_touched = crate::analysis::scan_fn_touched(ctx.ast);
     facts
@@ -593,10 +625,15 @@ struct Recorded {
     fn_param_sites: BTreeSet<usize>,
     join_tags: BTreeMap<*const Stmt, bool>,
     call_tags: BTreeMap<*const Expr, Vec<bool>>,
+    // Per-name adoption provenance, computed off the recording pass's
+    // final scopes (the walk state does not outlive the analyzer, so
+    // the map is folded here): name -> the earliest witness line among
+    // its sites' Any flips.
+    adopt_lines: BTreeMap<String, usize>,
 }
 
 impl Analyzer {
-    fn into_recorded(self) -> Recorded {
+    fn into_recorded(self, adopt_lines: BTreeMap<String, usize>) -> Recorded {
         Recorded {
             recording: true,
             ledger: self.ledger,
@@ -612,6 +649,7 @@ impl Analyzer {
             fn_param_sites: self.fn_param_sites,
             join_tags: self.join_tags,
             call_tags: self.call_tags,
+            adopt_lines,
         }
     }
 }
@@ -733,6 +771,7 @@ impl Recorded {
             call_defs: BTreeMap::new(),
             stmt_lines: self.stmt_lines,
             ctor_lines: self.ctor_lines,
+            adopt_lines: self.adopt_lines,
             diagnostics: self.ledger.diagnostics,
         }
     }

@@ -8,6 +8,43 @@ impl Analyzer {
         }
     }
 
+    /// Record the adoption's cause line for a site — min-insert, so
+    /// the FIRST witness that flipped it wins (later witnesses on an
+    /// already-dynamic name change nothing).
+    pub(super) fn note_adopt(&mut self, site: usize, line: usize) {
+        match self.lattice.adopt_witness.entry(site) {
+            std::collections::btree_map::Entry::Occupied(mut e) => {
+                if line < *e.get() {
+                    e.insert(line);
+                }
+            }
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert(line);
+            }
+        }
+    }
+
+    /// The store/rebind adoption poke: the witness `vt` joins this
+    /// site's pinned element to Any — the retroactive flip (signal 78)
+    /// with its provenance line, one helper for every non-ctor witness
+    /// face. A site already dynamic, or a join that stays uniform or
+    /// conflicts, records nothing.
+    pub(super) fn note_adopt_if_flipping(
+        &mut self,
+        rec: Gate,
+        site: usize,
+        vt: &Ty,
+        line: Option<usize>,
+    ) {
+        let cur = self.lattice.site_elem[site].clone();
+        if !matches!(cur, Any) && matches!(join_ty(&cur, vt), Any) {
+            self.probe(rec, trace::TRACE_ANY_NAME_ADOPTED);
+            if let Some(l) = line {
+                self.note_adopt(site, l);
+            }
+        }
+    }
+
     pub(super) fn walk_stmts(&mut self, rec: Gate, stmts: &[Stmt]) {
         for s in stmts {
             if let Err(err) = self.walk_stmt(rec, s) {
@@ -202,13 +239,38 @@ impl Analyzer {
                             incoming = join_ty(&incoming, &self.lattice.site_elem[*s]);
                         }
                     }
-                    if scalar(&incoming) {
+                    // The rebind's element story runs BOTH ways: the
+                    // incoming element flows into the name's previous
+                    // sites, and their joined element flows into the
+                    // incoming site — rebind links are witnesses like
+                    // any other (the settled adoption contract), so a
+                    // name whose history mixes scalar kinds adopts
+                    // instead of leaving sites that disagree about one
+                    // name. Either direction that joins a pinned kind
+                    // into Any is the adoption flip (signal 78).
+                    let line = self.stmt_lines.get(&(stmt as *const Stmt)).copied();
+                    let old: Vec<usize> = self
+                        .resolve_aliases(rec, name)?
+                        .into_iter()
+                        .filter(|s| !is_root(s) && !is_ghost(s))
+                        .collect();
+                    let mut old_sum = Pending;
+                    for s in &old {
+                        old_sum = join_ty(&old_sum, &self.lattice.site_elem[*s]);
+                    }
+                    if scalarish(&incoming) {
                         signal!(rec.on(), trace::TRACE_STMT_ASSIGN_TBL_SCALAR);
-                        let old = self.resolve_aliases(rec, name)?;
                         for s in old {
-                            if !is_root(&s) && !is_ghost(&s) {
-                                signal!(rec.on(), trace::TRACE_STMT_ASSIGN_TBL_SCALAR_VALID);
-                                self.decide(rec, s, &incoming);
+                            signal!(rec.on(), trace::TRACE_STMT_ASSIGN_TBL_SCALAR_VALID);
+                            self.note_adopt_if_flipping(rec, s, &incoming, line);
+                            self.decide(rec, s, &incoming);
+                        }
+                    }
+                    if scalarish(&old_sum) {
+                        for s in &bind.aliases {
+                            if !is_root(s) && !is_ghost(s) {
+                                self.note_adopt_if_flipping(rec, *s, &old_sum, line);
+                                self.decide(rec, *s, &old_sum);
                             }
                         }
                     }
@@ -548,12 +610,14 @@ impl Analyzer {
                         .copied()
                         .filter_map(|x| self.proj_node(x))
                         .collect();
+                    let line = self.stmt_lines.get(&(stmt as *const Stmt)).copied();
                     for s in proj_bases
                         .iter()
                         .copied()
                         .filter(|x| !cyclic_sites.contains(x))
                     {
                         signal!(rec.on(), trace::TRACE_STMT_IDX_VALID_ALIAS);
+                        self.note_adopt_if_flipping(rec, s, &expected_ty, line);
                         self.decide(rec, s, &expected_ty);
                     }
                 }

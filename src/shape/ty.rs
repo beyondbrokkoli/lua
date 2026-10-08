@@ -27,6 +27,18 @@ pub fn scalarish(t: &Ty) -> bool {
     matches!(t, Int | Flt | Bool | Str | Any)
 }
 
+/// Whether the dynamic cell appears anywhere in a type — the nested
+/// adoption's trigger: a layer's converged element only rides INTO its
+/// row sites when the join actually adopted (a uniform push would be a
+/// no-op anyway, but the signal discipline wants the event named).
+pub fn contains_any(t: &Ty) -> bool {
+    match t {
+        Any => true,
+        Tbl(inner) => contains_any(inner),
+        _ => false,
+    }
+}
+
 pub fn join_ty(a: &Ty, b: &Ty) -> Ty {
     match (a, b) {
         (Pending, x) | (x, Pending) => x.clone(),
