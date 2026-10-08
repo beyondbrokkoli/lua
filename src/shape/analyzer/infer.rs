@@ -537,7 +537,7 @@ impl Analyzer {
                 // affine sole-holding: two reads of the same slot are
                 // the same header, so the second owning bind is
                 // refused.
-                let aliases = if lineage.is_empty() || scalarish(&r) || matches!(r, Conflict) {
+                let aliases = if lineage.is_empty() || value_kind(&r) || matches!(r, Conflict) {
                     BTreeSet::new()
                 } else {
                     signal!(rec.on(), trace::TRACE_ROW_GHOST_MINT);

@@ -9,7 +9,7 @@ use super::core::{
 };
 use super::facts::ShapeFacts;
 use super::helpers::{const_key_value, extract_guard, merge_table_scopes};
-use super::ty::{Ty, arith_ty, contains_any, join_ty, scalar, scalarish};
+use super::ty::{Ty, arith_ty, contains_any, join_ty, pinned_scalar, value_kind};
 use Ty::{Any, Bool, Conflict, Flt, Int, Pending, Str, Tbl};
 // The boundary seed mints its element Pending — children resolve their
 // own Ints through the flat re-export below.

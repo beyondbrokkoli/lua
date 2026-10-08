@@ -105,7 +105,7 @@ pub(super) fn borrowers_of(
             if d == skip_depth && n == skip_name {
                 continue;
             }
-            if scalarish(&ts.ty) {
+            if value_kind(&ts.ty) {
                 continue;
             }
             if ts.lineage.keys().any(|o| release.contains(o)) {

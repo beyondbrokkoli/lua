@@ -250,7 +250,7 @@ unsafe fn run_boundary(words: &[String]) -> Result<(), String> {
                     if kind == glm_rt::rt::GLM_ARG_ANY {
                         // A string word under the dynamic contract: the
                         // intern gave the .so-identity pointer, pack it
-                        // as the cell's payload now — and cross through
+                        // as the cell's payload — and cross through
                         // the register face, like every Any store.
                         let cell = glm_rt::glm_any_pack(glm_rt::rt::GLM_ARG_STRING, p as u64);
                         glm_tbl_set_any(args, i as i64, cell);

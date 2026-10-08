@@ -195,6 +195,32 @@ fn attach_dbg(code: &mut String, start: usize, node: usize) {
     }
 }
 
+/// Emit one batch of deferred variable binds as llvm.dbg.value lines.
+/// Every line carries its own !dbg position — these never enter an
+/// attach_dbg span, so `start` bookkeeping never sees them.
+fn flush_binds(
+    code: &mut String,
+    needs_decl: &mut bool,
+    dbg: &mut Option<DebugMeta>,
+    binds: &mut Vec<&DbgBind>,
+) {
+    for bind in binds.drain(..) {
+        let Some(d) = dbg else { continue };
+        *needs_decl = true;
+        let var = d.var_node(bind);
+        let loc = bind.loc.unwrap_or(SourceLoc { line: 1, col: 1 });
+        let dbg_loc = d.loc_node(loc);
+        code.push_str(&format!(
+            "  call void @llvm.dbg.value(metadata {} %v{}, metadata !{}, \
+             metadata !DIExpression()), !dbg !{}\n",
+            dbg_ty(bind.kind),
+            bind.reg,
+            var,
+            dbg_loc
+        ));
+    }
+}
+
 // === The seam plan ====================================================
 // The ONE walk that numbers every table-seam instruction. Before the
 // lowerer owned continuations, the emitter split LLVM blocks
@@ -416,7 +442,27 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     for block in &program.blocks {
         code.push_str(&format!("\nb{}:\n", block.id));
 
+        // Binds anchored at an instruction whose successor is another
+        // phi wait here: LLVM's records model attaches each
+        // llvm.dbg.value to the instruction that FOLLOWS it, a
+        // DbgRecord on a phi is invalid, and clang's answer is the
+        // whole module's debug info being dropped ("PHI Node must not
+        // have any attached DbgRecords" — Lua-line breakpoints and
+        // variable views die for every join-bearing script; pinned by
+        // the smoke's join face). A phi has no runtime position of its
+        // own, so a join bind flushed before the block's first real
+        // instruction describes the same program point.
+        let mut pending_binds: Vec<&DbgBind> = Vec::new();
+
         for (ii, instr) in block.instrs.iter().enumerate() {
+            if !matches!(instr, Instruction::Phi(_)) {
+                flush_binds(
+                    &mut code,
+                    &mut needs_dbg_value_decl,
+                    &mut dbg,
+                    &mut pending_binds,
+                );
+            }
             let start = code.len();
             match instr {
                 Instruction::LoadInt { target, val } => {
@@ -742,30 +788,16 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                 }
             }
             // Stamp the statement's position on every line the
-            // instruction expanded to, then flush the variable binds
+            // instruction expanded to, then bank the variable binds
             // anchored at it (llvm.dbg.value describing a register as
-            // a named local from here on).
+            // a named local from here on) for the next flush point.
             if let Some(loc) = block.locs.get(ii).copied().flatten()
                 && let Some(d) = &mut dbg
             {
                 let node = d.loc_node(loc);
                 attach_dbg(&mut code, start, node);
             }
-            for bind in block.dbg_values.iter().filter(|b| b.after == ii) {
-                let Some(d) = &mut dbg else { continue };
-                needs_dbg_value_decl = true;
-                let var = d.var_node(bind);
-                let loc = bind.loc.unwrap_or(SourceLoc { line: 1, col: 1 });
-                let dbg_loc = d.loc_node(loc);
-                code.push_str(&format!(
-                    "  call void @llvm.dbg.value(metadata {} %v{}, metadata !{}, \
-                     metadata !DIExpression()), !dbg !{}\n",
-                    dbg_ty(bind.kind),
-                    bind.reg,
-                    var,
-                    dbg_loc
-                ));
-            }
+            pending_binds.extend(block.dbg_values.iter().filter(|b| b.after == ii));
         }
 
         // A block ending in a fast store was terminated by that
@@ -783,7 +815,24 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                 block.id,
                 cont
             );
+            // The expansion already terminated this block: a banked
+            // bind would emit dead code past the terminator. No such
+            // bind exists (a bind anchors after its defining
+            // instruction, and the store defines nothing), so die
+            // loudly if one ever appears.
+            assert!(
+                pending_binds.is_empty(),
+                "a bind banked past a fast store would emit past its \
+                 terminator — block {}",
+                block.id
+            );
         } else {
+            flush_binds(
+                &mut code,
+                &mut needs_dbg_value_decl,
+                &mut dbg,
+                &mut pending_binds,
+            );
             let term_start = code.len();
             match &block.terminator {
                 Some(Terminator::Jump(b)) => code.push_str(&format!("  br label %b{}\n", b)),

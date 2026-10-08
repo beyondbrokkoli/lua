@@ -139,9 +139,9 @@ impl Analyzer {
                         // Value-kind binds (scalars and the dynamic
                         // cell) classify as copies; only a ctor binds
                         // heap. An Any bind fired neither under the
-                        // old `scalar` — the bug class this session
-                        // retired.
-                        if scalarish(&bind.ty) {
+                        // old pinned-only predicate — the bug class
+                        // this session retired.
+                        if value_kind(&bind.ty) {
                             signal!(rec.on(), trace::TRACE_BIND_SCALAR);
                         } else if matches!(expr, Expr::TableCtor(_)) {
                             signal!(rec.on(), trace::TRACE_BIND_HEAP);
@@ -229,7 +229,7 @@ impl Analyzer {
                 } else {
                     self.collect_entry_moves(rec, expr, &mut moved_srcs)?;
                 }
-                if scalarish(&bind.ty) {
+                if value_kind(&bind.ty) {
                     signal!(rec.on(), trace::TRACE_BIND_SCALAR);
                 } else if matches!(expr, Expr::TableCtor(_)) {
                     signal!(rec.on(), trace::TRACE_BIND_HEAP);
@@ -263,7 +263,7 @@ impl Analyzer {
                     for s in &old {
                         old_sum = join_ty(&old_sum, &self.lattice.site_elem[*s]);
                     }
-                    if scalarish(&incoming) {
+                    if value_kind(&incoming) {
                         signal!(rec.on(), trace::TRACE_STMT_ASSIGN_TBL_SCALAR);
                         for s in old {
                             signal!(rec.on(), trace::TRACE_STMT_ASSIGN_TBL_SCALAR_VALID);
@@ -271,7 +271,7 @@ impl Analyzer {
                             self.decide(rec, s, &incoming);
                         }
                     }
-                    if scalarish(&old_sum) {
+                    if value_kind(&old_sum) {
                         for s in &bind.aliases {
                             if !is_root(s) && !is_ghost(s) {
                                 self.note_adopt_if_flipping(rec, *s, &old_sum, line);

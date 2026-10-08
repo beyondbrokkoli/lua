@@ -40,12 +40,12 @@ impl Analyzer {
             if matches!(bind.ty, Str) {
                 return Ok(());
             }
-            // Deliberately `scalar`, NOT the value-kinds set: an
+            // Deliberately `pinned_scalar`, NOT the value-kinds set: an
             // Any-typed name passes through here unpunished so the
             // checker's Len arm owns the Any admission (the
             // deferral/replay ledger) — this guard rejects only the
             // four pinned scalars it types itself.
-            if scalar(&bind.ty) && !matches!(bind.ty, Pending) {
+            if pinned_scalar(&bind.ty) && !matches!(bind.ty, Pending) {
                 return Err(ShapeError(format!(
                     "Type Error: '#' requires a Table, String, or Any operand — '{name}' is a \
                      scalar"

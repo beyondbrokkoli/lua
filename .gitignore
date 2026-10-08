@@ -6,6 +6,9 @@ __pycache__/
 .glm_rt_trace.bin
 libglm_out.so
 /cases/*
+!/cases/explore_*.lua
+!/cases/any_adopt_store.lua
+!/cases/rebind_nil_slot_adopt.lua
 !/cases/args_any_seam_phi_grow.lua
 !/cases/21_interop_alloc_arg_header.lua
 !/cases/90_smoke_far_any_tag.lua
@@ -15,5 +18,5 @@ libglm_out.so
 .gdb_history
 /*.md
 !/README.md
-!/AGENT.md
+!/AGENTS.md
 .zcodeignore

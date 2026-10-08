@@ -321,8 +321,8 @@ unsafe fn overflow_map(t: *mut GlmTable) -> &'static mut HashMap<i64, u128> {
 // seam is a BYTE MOVER — the exported *const u8 / *mut u8 contract
 // guarantees 8 bytes of alignment, never more — so slot/dst movements
 // stay unaligned: not timidity, the only op correct against the
-// promise the ABI actually makes. And the 16-byte cell no longer
-// rides that seam at all: glm_tbl_set_any / glm_tbl_get_any pass the
+// promise the ABI actually makes. And the 16-byte cell does not ride
+// that seam at all: glm_tbl_set_any / glm_tbl_get_any pass the
 // whole word in the i128 register pair (glm_any_print's dialect) — a
 // register has no alignment.
 //
@@ -951,7 +951,7 @@ pub unsafe extern "C" fn glm_tbl_free(t: *mut GlmTable) {
 /// The keep-free: the deep free with one pointer-identity skip. Frees
 /// `t`'s header, cells, and every row reachable from it — except the
 /// subtree rooted at `keep` (compared at every depth, so intermediate
-/// shells release while the kept row survives for whoever now holds
+/// shells release while the kept row survives for whoever holds
 /// it: the boundary host, or an inline caller). `keep == null` (an
 /// out-of-bounds read handed the host nothing) keeps nothing — a
 /// plain deep free. `keep == t` frees nothing but the guard itself.

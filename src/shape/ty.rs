@@ -17,13 +17,14 @@ pub enum Ty {
 
 use Ty::{Any, Bool, Conflict, Flt, Int, Pending, Str, Tbl};
 
-pub fn scalar(t: &Ty) -> bool {
+pub fn pinned_scalar(t: &Ty) -> bool {
     matches!(t, Int | Flt | Bool | Str)
 }
 
 /// The kinds that may ride a dynamic cell: the four scalars plus Any
 /// itself (a mixed ctor's Any entries keep the site dynamic).
-pub fn scalarish(t: &Ty) -> bool {
+/// (renamed from `scalarish` — the near-twin names cost one shipped bug; see ROADMAP's protocol section)
+pub fn value_kind(t: &Ty) -> bool {
     matches!(t, Int | Flt | Bool | Str | Any)
 }
 
@@ -48,7 +49,7 @@ pub fn join_ty(a: &Ty, b: &Ty) -> Ty {
         // decided at the join so every carrier and store downstream
         // flows as Table<Any>. A uniform pair never reaches this arm
         // (equal operands answer as themselves below).
-        (x, y) if x != y && scalarish(x) && scalarish(y) => Any,
+        (x, y) if x != y && value_kind(x) && value_kind(y) => Any,
         (Tbl(inner_a), Tbl(inner_b)) => {
             let merged = join_ty(inner_a, inner_b);
             if merged != Conflict {
