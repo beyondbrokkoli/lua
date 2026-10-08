@@ -136,7 +136,12 @@ impl Analyzer {
                         let bind = self.infer_bind(rec, expr)?;
                         self.check_uses(rec, expr)?;
                         self.collect_entry_moves(rec, expr, &mut moved_srcs)?;
-                        if scalar(&bind.ty) {
+                        // Value-kind binds (scalars and the dynamic
+                        // cell) classify as copies; only a ctor binds
+                        // heap. An Any bind fired neither under the
+                        // old `scalar` — the bug class this session
+                        // retired.
+                        if scalarish(&bind.ty) {
                             signal!(rec.on(), trace::TRACE_BIND_SCALAR);
                         } else if matches!(expr, Expr::TableCtor(_)) {
                             signal!(rec.on(), trace::TRACE_BIND_HEAP);
@@ -224,7 +229,7 @@ impl Analyzer {
                 } else {
                     self.collect_entry_moves(rec, expr, &mut moved_srcs)?;
                 }
-                if scalar(&bind.ty) {
+                if scalarish(&bind.ty) {
                     signal!(rec.on(), trace::TRACE_BIND_SCALAR);
                 } else if matches!(expr, Expr::TableCtor(_)) {
                     signal!(rec.on(), trace::TRACE_BIND_HEAP);

@@ -86,9 +86,9 @@ pub(super) fn release_set(
 /// whose lineage names a node inside the release. A lineage key is an
 /// ancestor of the binding's row (each read deepens the chain and
 /// seeds its base's tokens), so naming any released node means the
-/// binding's register points into the tree being composted. Scalar
-/// bindings are excluded — their register copied a cell value, not a
-/// row pointer. `upto` bounds the scan: scope-exit batches spare only
+/// binding's register points into the tree being composted. Value-kind
+/// bindings (the four scalars plus Any) are excluded — their register
+/// copied a cell value, not a row pointer. `upto` bounds the scan: scope-exit batches spare only
 /// OUTER borrowers (batch-mates die in the same instant, their ghosts
 /// deferring through batch coverage); drops and rebinds run
 /// mid-statement, where every live binding counts.
@@ -105,7 +105,7 @@ pub(super) fn borrowers_of(
             if d == skip_depth && n == skip_name {
                 continue;
             }
-            if scalar(&ts.ty) {
+            if scalarish(&ts.ty) {
                 continue;
             }
             if ts.lineage.keys().any(|o| release.contains(o)) {

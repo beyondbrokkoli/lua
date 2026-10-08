@@ -271,6 +271,12 @@ impl<'a> TypeChecker<'a> {
         for stmt in stmts {
             if let Err(msg) = self.check_stmt(stmt) {
                 signal!(trace::TRACE_GHOST_BAIL_CHECKER);
+                // The desync family's tell ("...disagree") — the same
+                // predicate LowerError::is_desync applies, keyed off
+                // the ROADMAP tripwire table's naming convention.
+                if msg.contains("disagree") {
+                    signal!(trace::TRACE_ENG_DESYNC);
+                }
                 let line = self.shape.stmt_lines.get(&(stmt as *const Stmt)).copied();
                 self.shape.diagnostics.push(match line {
                     Some(l) => format!("line {l}: {msg}"),

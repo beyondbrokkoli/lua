@@ -17,6 +17,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub struct LowerError(pub String);
 
+impl LowerError {
+    /// The cross-engine desync class: every message in the family ends
+    /// with the tell ("...the X and the Y disagree") — the same grep
+    /// that builds ROADMAP's desync-tripwire table keys this
+    /// predicate, so a new desync written to the convention carries
+    /// the signal (156) automatically. Never true of a script error.
+    pub fn is_desync(&self) -> bool {
+        self.0.contains("disagree")
+    }
+}
+
 /// The boundary contract's GlmElem face — what the IR program exports
 /// (glm_arg_kind) and what the hosts parse by. Any is the dynamic
 /// boundary cell: the module's answer that the HOST picks each word's
@@ -241,17 +252,25 @@ impl<'a> IrLowerer<'a> {
     /// visible and live at the emission point; a borrower that itself
     /// dropped reads null, degenerating the keep to a plain free); a
     /// Ghost names a housed row whose pointer a store captured
-    /// (row-housing stage). Scalar locals are skipped defensively — a
-    /// copied cell value spares nothing.
+    /// (row-housing stage). Every Name names a ROW borrower: the
+    /// analyzer's borrower scan excludes value-kind bindings at its
+    /// one choke point (`borrowers_of` — the four scalars plus Any,
+    /// whose registers copied a cell value and spare nothing), so a
+    /// non-pointer register here is a planner/lowerer desync and
+    /// fails the build rather than degrading the free silently.
     fn resolve_keeps(&self, keeps: &[Keep]) -> Result<Vec<Reg<Ptr>>, LowerError> {
         let mut regs = Vec::new();
         for k in keeps {
             match k {
                 Keep::Name(n) => {
                     let local = self.read_var(n)?;
-                    if matches!(local.reg, AnyReg::Ptr(_)) {
-                        regs.push(ptr_of(local.reg)?);
-                    }
+                    let reg = ptr_of(local.reg).map_err(|_| {
+                        LowerError(format!(
+                            "Lower Error: borrower '{n}' planned as a keep holds a \
+                             non-pointer register — the analyzer and the lowerer disagree"
+                        ))
+                    })?;
+                    regs.push(reg);
                 }
                 Keep::Ghost(g) => {
                     // A keep the lowerer cannot resolve is a broken
@@ -551,12 +570,16 @@ impl<'a> IrLowerer<'a> {
             match self.lower_stmt(stmt) {
                 Ok(_) => {}
                 Err(e) => {
+                    let desync = e.is_desync();
                     let line = self.shape.stmt_lines.get(&(stmt as *const Stmt)).copied();
                     self.diagnostics.push(match line {
                         Some(l) => format!("line {l}: {}", e.0),
                         None => e.0,
                     });
                     signal!(trace::TRACE_GHOST_BAIL_LOWERER);
+                    if desync {
+                        signal!(trace::TRACE_ENG_DESYNC);
+                    }
                     break;
                 }
             }
@@ -564,12 +587,20 @@ impl<'a> IrLowerer<'a> {
         // The root scope composes at its exit like every block scope,
         // before the boundary hand-off join is materialized.
         if let Err(e) = self.emit_root_frees() {
+            let desync = e.is_desync();
             self.diagnostics.push(e.0);
             signal!(trace::TRACE_GHOST_BAIL_LOWERER);
+            if desync {
+                signal!(trace::TRACE_ENG_DESYNC);
+            }
         }
         if let Err(e) = self.finalize_return_ctx() {
+            let desync = e.is_desync();
             self.diagnostics.push(e.0);
             signal!(trace::TRACE_GHOST_BAIL_LOWERER);
+            if desync {
+                signal!(trace::TRACE_ENG_DESYNC);
+            }
         }
         IrProgram {
             blocks: std::mem::take(&mut self.blocks),
@@ -2313,6 +2344,38 @@ fn collect_fill_stores(
                 collect_fill_stores(else_body, guard, mutated, fills, nested_fills);
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod desync_class_tests {
+    use super::LowerError;
+
+    #[test]
+    fn disagree_messages_classify_as_desync() {
+        // The family tell is the classification contract — the same
+        // grep that builds ROADMAP's tripwire table keys slot 156.
+        for msg in [
+            "Lower Error: a table operand position received a non-table — \
+             the checker and the lowerer disagree",
+            "Lower Error: a housed row's keep register was never \
+             captured — the analyzer and the lowerer disagree",
+            "Lower Error: IR emitter label desync: a br/phi names block 'b3', \
+             which the module never emits — the emitters and the block \
+             model disagree (see SeamPlan in backend.rs)",
+        ] {
+            assert!(LowerError(msg.to_string()).is_desync(), "{msg}");
+        }
+    }
+
+    #[test]
+    fn script_errors_never_classify_as_desync() {
+        for msg in [
+            "Lower Error: Undeclared variable",
+            "Type Error: '+' requires numeric operands",
+        ] {
+            assert!(!LowerError(msg.to_string()).is_desync(), "{msg}");
         }
     }
 }
