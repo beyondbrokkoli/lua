@@ -196,30 +196,28 @@ fn attach_dbg(code: &mut String, start: usize, node: usize) {
 }
 
 // === The seam plan ====================================================
-// The ONE walk that numbers every table-seam instruction and names
-// every block's final LLVM label. Before this existed, the emitter
-// incremented a `ts` counter while a shadow "phi-tail probe"
-// re-simulated the same rule to predict cont-block names for phis —
-// two copies of one invariant, nothing enforcing agreement. The
-// register-seam change edited one copy (a get that stopped spilling
-// to a slot) and the other silently disagreed: loop-header phis named
-// bts1cont blocks the emitter never wrote (clang: "use of undefined
-// value") — cases/args_any_seam_phi_grow.lua pins that shape. Now
-// nothing counts during emission: both the phis' predecessor labels
-// and the emitters' seam numbers READ this plan, so they cannot
-// drift. A seam instruction the plan did not number dies loudly
-// here, at the plan, with the exact block and index — never as
-// invalid IR at clang.
+// The ONE walk that numbers every table-seam instruction. Before the
+// lowerer owned continuations, the emitter split LLVM blocks
+// mid-instruction-stream (a fast store wrote `br label %bts{n}cont`
+// plus the label itself), so one compiler-IR block mapped to 1–3
+// emitted blocks and phis had to name predecessors by labels no
+// compiler block ever owned — first a shadow "phi-tail probe"
+// re-simulated the counter to predict them (two copies of one
+// invariant; the register-seam change edited one copy and loop-header
+// phis named bts1cont blocks the emitter never wrote — clang: "use of
+// undefined value", pinned by cases/args_any_seam_phi_grow.lua). The
+// deep fix moved the split INTO the lowerer: a fast store terminates
+// its block into a real continuation block, phis name `b{id}`
+// predecessors, and the plan's only remaining job is the per-
+// instruction slot numbers — nothing counts during emission, and the
+// structural law (a fast store is always its block's last
+// instruction) is asserted right here, dying loudly with the exact
+// block and index instead of mislabeling the IR.
 struct SeamPlan {
     /// The seam number of each table-seam instruction, indexed
     /// [block.id][instruction index] — `None` for non-seam
     /// instructions.
     numbers: Vec<Vec<Option<usize>>>,
-    /// Every block's final LLVM label: `b{id}`, or `bts{n}cont` when
-    /// the block's last seam instruction is a fast store (its
-    /// Dense/Sparse/Hybrid emission ends the current block and
-    /// continues in the cont block).
-    tails: Vec<String>,
 }
 
 impl SeamPlan {
@@ -234,27 +232,35 @@ impl SeamPlan {
 
 /// Walk the program once and build the seam plan: uniform numbers for
 /// every table-seam instruction (per INSTRUCTION, not per spilled
-/// slot — the register face and the byte face number alike), and the
-/// final LLVM label each block's emission will end in.
+/// slot — the register face and the byte face number alike; the number
+/// is load-bearing only for `%ts{n}` name uniqueness now).
 fn plan_seams(program: &IrProgram) -> SeamPlan {
     let mut numbers: Vec<Vec<Option<usize>>> = program
         .blocks
         .iter()
         .map(|b| vec![None; b.instrs.len()])
         .collect();
-    let mut tails: Vec<String> = program
-        .blocks
-        .iter()
-        .map(|b| format!("b{}", b.id))
-        .collect();
     let mut probe = 0usize;
     for block in &program.blocks {
-        let mut last_fast = None;
         for (ii, instr) in block.instrs.iter().enumerate() {
             match instr {
                 Instruction::TableSetFast { .. } => {
+                    // The lowerer splits into the continuation the
+                    // moment it emits a fast store, so the store is
+                    // always its block's last instruction — the
+                    // emission below terminates the block on this
+                    // instruction's expansion. Anything else means a
+                    // new emitter contract is drifting; die here, with
+                    // the block and index, not as invalid IR at clang.
+                    assert!(
+                        ii == block.instrs.len() - 1,
+                        "a fast store must end its block (the lowerer \
+                         owns the continuation) — block {} carries one \
+                         at index {} that is not last",
+                        block.id,
+                        ii
+                    );
                     numbers[block.id][ii] = Some(probe);
-                    last_fast = Some(probe);
                     probe += 1;
                 }
                 Instruction::TableGet { .. } | Instruction::TableSet { .. } => {
@@ -264,29 +270,28 @@ fn plan_seams(program: &IrProgram) -> SeamPlan {
                 _ => {}
             }
         }
-        if let Some(n) = last_fast {
-            tails[block.id] = format!("bts{n}cont");
-        }
     }
-    SeamPlan { numbers, tails }
+    SeamPlan { numbers }
 }
 
-/// The label-closure check — the belt to `SeamPlan`'s suspenders:
-/// every block label a `br` or a phi names must be a label the
-/// assembled module actually emits. The seam-counter desync this
+/// The label-closure check — the belt to the lowerer-owned CFG's
+/// suspenders: every block label a `br` or a phi names must be a label
+/// the assembled module actually emits. The seam-counter desync this
 /// guards against used to surface as clang's bare "use of undefined
 /// value '%bts1cont'"; now it dies HERE, at the emitter, naming the
 /// dangling block. One direction only (referenced → defined): a
 /// defined-but-unreferenced label is valid IR (no function's
 /// `entry:` is ever referenced), a referenced-but-undefined one is
-/// not. SeamPlan makes the seam flavor of this impossible; this
-/// check makes EVERY flavor (a new emitter arm, a hand-routed
-/// branch) impossible to ship.
+/// not. Phis name real `b{id}` blocks since the lowerer owns
+/// continuations, so the phi flavor is impossible by construction;
+/// this check makes EVERY flavor (a new emitter arm, a hand-routed
+/// branch, an emitter-internal diamond like the Hybrid verdict's
+/// `bts{n}dense`/`bts{n}sparse` arms) impossible to ship.
 fn assert_labels_closed(ir: &str) {
     let mut defined: Vec<&str> = Vec::new();
     let mut referenced: Vec<&str> = Vec::new();
     for line in ir.lines() {
-        // Block labels sit at column 0 (`b0:`, `bts3cont:`, `entry:`).
+        // Block labels sit at column 0 (`b0:`, `bts3dense:`, `entry:`).
         // Everything else that could masquerade starts with a sigil
         // (`@` globals, `!` metadata, `declare`/`define` never end a
         // line with a bare colon).
@@ -393,12 +398,11 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     // call site (never inside a loop body's block — the entry slot is
     // reused by stores before each call).
     let mut ks = 0usize;
-    // The seam plan — the single source the phi tails and the seam
-    // emitters both read (see SeamPlan above). The tail borrow is the
-    // phis' half; `seam_plan.number(...)` at the three seam dispatch
-    // arms is the emitters' half. One walk, no second counter.
+    // The seam plan — the single source the seam emitters read for
+    // their per-instruction slot numbers (see SeamPlan above). Phis
+    // need nothing from it: they name `b{id}` predecessors, real
+    // blocks the lowerer created.
     let seam_plan = plan_seams(program);
-    let tail: &[String] = &seam_plan.tails;
 
     let mut allocas = String::new();
     let mut code = String::new();
@@ -616,19 +620,19 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                     code.push_str(&format!("  %v{} = xor i1 %v{}, 1\n", target.id, source.id));
                 }
                 Instruction::Phi(PhiRegs::Int { target, args }) => {
-                    emit_phi(target, args, tail, &mut code)
+                    emit_phi(target, args, &mut code)
                 }
                 Instruction::Phi(PhiRegs::Float { target, args }) => {
-                    emit_phi(target, args, tail, &mut code)
+                    emit_phi(target, args, &mut code)
                 }
                 Instruction::Phi(PhiRegs::Bool { target, args }) => {
-                    emit_phi(target, args, tail, &mut code)
+                    emit_phi(target, args, &mut code)
                 }
                 Instruction::Phi(PhiRegs::Ptr { target, args }) => {
-                    emit_phi(target, args, tail, &mut code)
+                    emit_phi(target, args, &mut code)
                 }
                 Instruction::Phi(PhiRegs::Any { target, args }) => {
-                    emit_phi(target, args, tail, &mut code)
+                    emit_phi(target, args, &mut code)
                 }
                 Instruction::Print { operands } => {
                     has_print = true;
@@ -702,27 +706,46 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
             }
         }
 
-        let term_start = code.len();
-        match &block.terminator {
-            Some(Terminator::Jump(b)) => code.push_str(&format!("  br label %b{}\n", b)),
-            Some(Terminator::Branch {
-                cond,
-                true_block,
-                false_block,
-            }) => code.push_str(&format!(
-                "  br i1 %v{}, label %b{}, label %b{}\n",
-                cond.id, true_block, false_block
-            )),
-            // The boundary value: a returned table pointer crosses to
-            // the host; every other fall-out of the block returns null.
-            Some(Terminator::Return(val)) => code.push_str(&format!("  ret ptr %v{}\n", val.id)),
-            Some(Terminator::Halt) | None => code.push_str("  ret ptr null\n"),
-        }
-        if let Some(loc) = block.term_loc
-            && let Some(d) = &mut dbg
-        {
-            let node = d.loc_node(loc);
-            attach_dbg(&mut code, term_start, node);
+        // A block ending in a fast store was terminated by that
+        // store's expansion (Dense/Sparse branch straight to the
+        // continuation; the Hybrid diamond's arms both do) — the IR's
+        // own Jump must name the same continuation the lowerer gave
+        // the instruction. Assert the agreement and emit nothing:
+        // re-emitting the br would land dead code after a terminator.
+        if let Some(Instruction::TableSetFast(s)) = block.instrs.last() {
+            let cont = s.cont();
+            assert!(
+                matches!(block.terminator, Some(Terminator::Jump(b)) if b == cont),
+                "a fast store's block must jump to its own continuation — \
+                 block {} ends in a fast store but does not jump to b{}",
+                block.id,
+                cont
+            );
+        } else {
+            let term_start = code.len();
+            match &block.terminator {
+                Some(Terminator::Jump(b)) => code.push_str(&format!("  br label %b{}\n", b)),
+                Some(Terminator::Branch {
+                    cond,
+                    true_block,
+                    false_block,
+                }) => code.push_str(&format!(
+                    "  br i1 %v{}, label %b{}, label %b{}\n",
+                    cond.id, true_block, false_block
+                )),
+                // The boundary value: a returned table pointer crosses to
+                // the host; every other fall-out of the block returns null.
+                Some(Terminator::Return(val)) => {
+                    code.push_str(&format!("  ret ptr %v{}\n", val.id))
+                }
+                Some(Terminator::Halt) | None => code.push_str("  ret ptr null\n"),
+            }
+            if let Some(loc) = block.term_loc
+                && let Some(d) = &mut dbg
+            {
+                let node = d.loc_node(loc);
+                attach_dbg(&mut code, term_start, node);
+            }
         }
     }
 
@@ -1074,11 +1097,13 @@ fn emit_cell_set_fast(
             index,
             value,
             layout,
+            cont,
         } => emit_table_set_fast(
             table,
             index,
             value,
             layout,
+            *cont,
             allocas,
             code,
             seam,
@@ -1091,11 +1116,13 @@ fn emit_cell_set_fast(
             index,
             value,
             layout,
+            cont,
         } => emit_table_set_fast(
             table,
             index,
             value,
             layout,
+            *cont,
             allocas,
             code,
             seam,
@@ -1108,11 +1135,13 @@ fn emit_cell_set_fast(
             index,
             value,
             layout,
+            cont,
         } => emit_table_set_fast(
             table,
             index,
             value,
             layout,
+            *cont,
             allocas,
             code,
             seam,
@@ -1125,11 +1154,13 @@ fn emit_cell_set_fast(
             index,
             value,
             layout,
+            cont,
         } => emit_table_set_fast(
             table,
             index,
             value,
             layout,
+            *cont,
             allocas,
             code,
             seam,
@@ -1142,11 +1173,13 @@ fn emit_cell_set_fast(
             index,
             value,
             layout,
+            cont,
         } => emit_table_set_fast(
             table,
             index,
             value,
             layout,
+            *cont,
             allocas,
             code,
             seam,
@@ -1159,11 +1192,13 @@ fn emit_cell_set_fast(
             index,
             value,
             layout,
+            cont,
         } => emit_table_set_fast(
             table,
             index,
             value,
             layout,
+            *cont,
             allocas,
             code,
             seam,
@@ -1400,15 +1435,13 @@ fn cmp_regs(
     }
 }
 
-fn emit_phi<R: Repr>(
-    target: &Reg<R>,
-    args: &[(BlockId, Reg<R>)],
-    tail: &[String],
-    code: &mut String,
-) {
+/// A join's value: every predecessor is a real block the lowerer
+/// created (fast stores included — their continuations are real
+/// blocks), so the label is always plain `b{id}`.
+fn emit_phi<R: Repr>(target: &Reg<R>, args: &[(BlockId, Reg<R>)], code: &mut String) {
     let pairs: Vec<String> = args
         .iter()
-        .map(|(b, r)| format!("[ %v{}, %{} ]", r.id, tail[*b]))
+        .map(|(b, r)| format!("[ %v{}, %b{} ]", r.id, b))
         .collect();
     code.push_str(&format!(
         "  %v{} = phi {} {}\n",
@@ -1475,12 +1508,21 @@ fn emit_table_get<E: Repr>(
     }
 }
 
+/// The fast store. Its block ends HERE: the lowerer split into the
+/// real continuation block `cont` the moment it emitted the
+/// instruction, so every edge this expansion writes branches to
+/// `%b{cont}` — a label a phi may legally name. The Dense and Sparse
+/// verdicts are straight-line stores plus the jump; only the Hybrid
+/// verdict branches at runtime, and its diamond arms are
+/// emitter-internal (`bts{n}dense` / `bts{n}sparse`) labels no phi
+/// ever names — each arm closes into the same real continuation.
 #[allow(clippy::too_many_arguments)]
 fn emit_table_set_fast<E: Repr>(
     table: &Reg<Ptr>,
     index: &Reg<Int>,
     value: &Reg<E>,
     layout: &LayoutVerdict,
+    cont: BlockId,
     allocas: &mut String,
     code: &mut String,
     seam: usize,
@@ -1527,22 +1569,21 @@ fn emit_table_set_fast<E: Repr>(
                    %ts{f}.d = load ptr, ptr %v{table}, !alias.scope !0\n\
                    %ts{f}.s = getelementptr inbounds {ety}, ptr %ts{f}.d, i64 %v{index}\n\
                    store {ety} {val_use}, ptr %ts{f}.s, !noalias !0\n\
-                   br label %bts{f}cont\n\n\
-                 bts{f}cont:\n",
+                   br label %b{cont}\n",
                 val_cast = val_cast,
                 f = f,
                 table = table.id,
                 index = index.id,
                 ety = ety,
-                val_use = val_use
+                val_use = val_use,
+                cont = cont
             ));
         }
         LayoutVerdict::Sparse => {
             code.push_str(&format!(
                 "{val_cast}\
                    {checked}\
-                   br label %bts{f}cont\n\n\
-                 bts{f}cont:\n",
+                   br label %b{cont}\n",
                 val_cast = val_cast,
                 checked = checked_store::<E>(
                     f,
@@ -1553,7 +1594,7 @@ fn emit_table_set_fast<E: Repr>(
                     needs_tbl_set_decl,
                     needs_tbl_set_any_decl
                 ),
-                f = f
+                cont = cont
             ));
         }
         _ => {
@@ -1567,11 +1608,10 @@ fn emit_table_set_fast<E: Repr>(
                    %ts{f}.d = load ptr, ptr %v{table}, !alias.scope !0\n\
                    %ts{f}.s = getelementptr inbounds {ety}, ptr %ts{f}.d, i64 %v{index}\n\
                    store {ety} {val_use}, ptr %ts{f}.s, !noalias !0\n\
-                   br label %bts{f}cont\n\n\
+                   br label %b{cont}\n\n\
                  bts{f}sparse:\n\
                    {checked}\
-                   br label %bts{f}cont\n\n\
-                 bts{f}cont:\n",
+                   br label %b{cont}\n",
                 val_cast = val_cast,
                 checked = checked_store::<E>(
                     f,
@@ -1586,7 +1626,8 @@ fn emit_table_set_fast<E: Repr>(
                 table = table.id,
                 index = index.id,
                 ety = ety,
-                val_use = val_use
+                val_use = val_use,
+                cont = cont
             ));
         }
     }
@@ -1922,17 +1963,25 @@ mod label_closure_tests {
     #[test]
     fn closed_module_passes() {
         // The seam shape exactly: a loop-header phi whose back-edge
-        // predecessor is a fast store's cont block, plus the entry
-        // label nothing references — closed in both scan directions.
+        // predecessor is a fast store's REAL continuation block, the
+        // hybrid diamond's emitter-internal arms closing into it, plus
+        // the entry label nothing references — closed in both scan
+        // directions.
         assert_labels_closed(
             "define ptr @f() {\n\
              entry:\n\
              \x20 br label %b0\n\
              \nb0:\n\
-             \x20 %v1 = phi i64 [ 0, %entry ], [ 1, %bts0cont ]\n\
-             \x20 br label %bts0cont\n\
-             \nbts0cont:\n\
-             \x20 ret ptr null\n\
+             \x20 %v1 = phi i64 [ 0, %entry ], [ 1, %b3 ]\n\
+             \x20 br i1 %v2, label %bts0dense, label %bts0sparse\n\
+             \nbts0dense:\n\
+             \x20 store i64 1, ptr %p\n\
+             \x20 br label %b3\n\
+             \nbts0sparse:\n\
+             \x20 call void @glm_tbl_set(ptr %t, i64 1, ptr %v)\n\
+             \x20 br label %b3\n\
+             \nb3:\n\
+             \x20 br label %b0\n\
              }\n",
         );
     }
@@ -1953,8 +2002,8 @@ mod label_closure_tests {
     #[test]
     #[should_panic(expected = "names block 'b1'")]
     fn dangling_reference_panics() {
-        // The seam-counter desync's exact shape: the phi names a cont
-        // block the emitter never wrote.
+        // The desync's exact shape: the phi names a block the emitter
+        // never wrote — whatever emitter arm let it slip.
         assert_labels_closed(
             "define ptr @f() {\n\
              entry:\n\
@@ -1964,5 +2013,54 @@ mod label_closure_tests {
              \x20 ret ptr null\n\
              }\n",
         );
+    }
+}
+
+#[cfg(test)]
+mod fast_store_tail_tests {
+    use super::{assert_labels_closed, emit_table_set_fast};
+    use crate::ir::{Int, Ptr, Reg};
+    use crate::shape::LayoutVerdict;
+
+    /// The Growing verdict's diamond — the only fast-store arm no
+    /// corpus case reaches today (a reserved loop's fills all refine
+    /// to Dense), so its rewrite is pinned here: the emitter-internal
+    /// arms close into the REAL continuation block, and no `bts…cont`
+    /// tail label exists anywhere a phi could name.
+    #[test]
+    fn growing_diamond_closes_into_the_real_cont_block() {
+        let table = Reg::<Ptr>::new(1);
+        let index = Reg::<Int>::new(2);
+        let value = Reg::<Int>::new(3);
+        let mut allocas = String::new();
+        let mut code = String::new();
+        let mut hdr_md = false;
+        let mut set_decl = false;
+        let mut set_any_decl = false;
+        emit_table_set_fast::<Int>(
+            &table,
+            &index,
+            &value,
+            &LayoutVerdict::Growing,
+            5,
+            &mut allocas,
+            &mut code,
+            7,
+            &mut hdr_md,
+            &mut set_decl,
+            &mut set_any_decl,
+        );
+        assert_eq!(code.matches("br label %b5").count(), 2);
+        assert!(!code.contains("cont:"));
+        // And the fragment is label-closed once wrapped in a module.
+        assert_labels_closed(&format!(
+            "define ptr @f() {{\n\
+             entry:\n\
+             \x20 br label %b9\n\
+             \nb9:\n{code}\
+             b5:\n\
+             \x20 ret ptr null\n\
+             }}\n"
+        ));
     }
 }

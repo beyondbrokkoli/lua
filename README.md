@@ -133,7 +133,8 @@ over the intern space, the same contract as between script literals.
 ## Tests
 
 ```sh
-lua run.lua                # build + fmt + clippy, whole corpus, lock byte-identity
+lua run.lua                # build + clippy, whole corpus, lock byte-identity
+lua run.lua run --fmt      # same, also gating on cargo fmt (opt-in; milestones carry it)
 lua run.lua run STR ...    # only cases whose name contains any STR
 lua run.lua probe FILE     # one arbitrary file; archives to target/probe/
 lua reset.lua              # overwrite diff target

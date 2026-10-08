@@ -390,6 +390,13 @@ pub enum CellSet {
     },
 }
 
+/// The fast store — the one instruction whose emission may branch (the
+/// Hybrid layout verdict's dense/sparse diamond). It is always the LAST
+/// instruction of its block: the lowerer terminates the block into
+/// `cont` (a real `BasicBlock` it created) the moment it emits the
+/// store, so phis name real predecessor ids and the backend's expansion
+/// ends its block in branches to `%b{cont}` — no emitter-invented tail
+/// labels anywhere a phi could see them.
 #[derive(Debug, Clone)]
 pub enum CellSetFast {
     Int {
@@ -397,37 +404,58 @@ pub enum CellSetFast {
         index: Reg<Int>,
         value: Reg<Int>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     },
     Float {
         table: Reg<Ptr>,
         index: Reg<Int>,
         value: Reg<Float>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     },
     Bool {
         table: Reg<Ptr>,
         index: Reg<Int>,
         value: Reg<Bool>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     },
     Ptr {
         table: Reg<Ptr>,
         index: Reg<Int>,
         value: Reg<Ptr>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     },
     Byte {
         table: Reg<Ptr>,
         index: Reg<Int>,
         value: Reg<Byte>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     },
     Any {
         table: Reg<Ptr>,
         index: Reg<Int>,
         value: Reg<Any>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     },
+}
+
+impl CellSetFast {
+    /// The continuation block the lowerer split after this store — the
+    /// target every emitted edge of the expansion branches to.
+    pub fn cont(&self) -> BlockId {
+        match self {
+            CellSetFast::Int { cont, .. }
+            | CellSetFast::Float { cont, .. }
+            | CellSetFast::Bool { cont, .. }
+            | CellSetFast::Ptr { cont, .. }
+            | CellSetFast::Byte { cont, .. }
+            | CellSetFast::Any { cont, .. } => *cont,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -648,6 +676,7 @@ pub trait CellRepr: Repr {
         index: Reg<Int>,
         value: Reg<Self>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     ) -> CellSetFast;
 }
 
@@ -672,12 +701,14 @@ impl CellRepr for Int {
         index: Reg<Int>,
         value: Reg<Self>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     ) -> CellSetFast {
         CellSetFast::Int {
             table,
             index,
             value,
             layout,
+            cont,
         }
     }
 }
@@ -703,12 +734,14 @@ impl CellRepr for Float {
         index: Reg<Int>,
         value: Reg<Self>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     ) -> CellSetFast {
         CellSetFast::Float {
             table,
             index,
             value,
             layout,
+            cont,
         }
     }
 }
@@ -734,12 +767,14 @@ impl CellRepr for Bool {
         index: Reg<Int>,
         value: Reg<Self>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     ) -> CellSetFast {
         CellSetFast::Bool {
             table,
             index,
             value,
             layout,
+            cont,
         }
     }
 }
@@ -765,12 +800,14 @@ impl CellRepr for Ptr {
         index: Reg<Int>,
         value: Reg<Self>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     ) -> CellSetFast {
         CellSetFast::Ptr {
             table,
             index,
             value,
             layout,
+            cont,
         }
     }
 }
@@ -796,12 +833,14 @@ impl CellRepr for Byte {
         index: Reg<Int>,
         value: Reg<Self>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     ) -> CellSetFast {
         CellSetFast::Byte {
             table,
             index,
             value,
             layout,
+            cont,
         }
     }
 }
@@ -827,12 +866,14 @@ impl CellRepr for Any {
         index: Reg<Int>,
         value: Reg<Self>,
         layout: crate::shape::LayoutVerdict,
+        cont: BlockId,
     ) -> CellSetFast {
         CellSetFast::Any {
             table,
             index,
             value,
             layout,
+            cont,
         }
     }
 }

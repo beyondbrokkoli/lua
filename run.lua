@@ -5,11 +5,15 @@ dofile("conf.lua")
 
 local function usage()
     print([[
-Usage: lua run.lua [run [substr]...] | probe <file.lua>
+Usage: lua run.lua [run [substr]...] | probe <file.lua> [--fmt]
   (no args)   run the whole corpus
   run         run the whole corpus
   run SUB...  run only cases whose name contains any SUB
   probe FILE  run one file, archive out.ll + plates to target/probe/
+  --fmt       also gate on cargo fmt --check (rustfmt is opt-in by
+              design: cargo fmt rewrites source files mid-session and
+              forces read-before-edit churn in agentic flows; milestone
+              relocks and review passes should carry it)
 
 The bench always includes the EXE section: every case is re-linked
 with --exe and run as ./glm_out with its ARGS words — the executable
@@ -22,6 +26,12 @@ if mode ~= "run" and mode ~= "probe" then
     usage()
     io.stderr:write("\nunknown argument: " .. ARGS[1] .. "\n")
     os.exit(1)
+end
+
+-- The rustfmt flag, parsed anywhere after the mode.
+local FMT = false
+for i = 2, #ARGS do
+    if ARGS[i] == "--fmt" then FMT = true end
 end
 
 -- reporting
@@ -125,12 +135,16 @@ do
         os.exit(1)
     end
     print("  ✓ compiler fresh (target/release/glm)")
-    local res = os.execute("cargo fmt --check > /dev/null 2> " .. BERR)
-    if not (res == 0 or res == true) then
-        print(c(RED, "  ✗ cargo fmt --check failed (run `cargo fmt` and re-stage):") .. "\n" .. read_file(BERR))
-        os.exit(1)
+    if FMT then
+        local res = os.execute("cargo fmt --check > /dev/null 2> " .. BERR)
+        if not (res == 0 or res == true) then
+            print(c(RED, "  ✗ cargo fmt --check failed (run `cargo fmt` and re-stage):") .. "\n" .. read_file(BERR))
+            os.exit(1)
+        end
+        print("  ✓ rustfmt clean (cargo fmt --check)")
+    else
+        report_notice("rustfmt gate skipped — pass --fmt to enforce it")
     end
-    print("  ✓ rustfmt clean (cargo fmt --check)")
     local res = os.execute("cargo clippy --release --quiet -- -D warnings > /dev/null 2> " .. BERR)
     if not (res == 0 or res == true) then
         print(c(RED, "  ✗ cargo clippy failed (-D warnings):") .. "\n" .. read_file(BERR))
@@ -163,9 +177,11 @@ if mode == "probe" then
     os.exit(0)
 end
 
--- run: optional substring filters over case names
+-- run: optional substring filters over case names (--fmt is not one)
 local filters = {}
-for i = 2, #ARGS do table.insert(filters, ARGS[i]) end
+for i = 2, #ARGS do
+    if ARGS[i] ~= "--fmt" then table.insert(filters, ARGS[i]) end
+end
 local function selected(name)
     if #filters == 0 then return true end
     for _, s in ipairs(filters) do

@@ -3,6 +3,7 @@ use crate::ast::StaticType;
 use crate::ir::{
     AnyReg, BlockId, Bool, Byte, CellRepr, CellTy, CellVal, CmpRegs, CmpRepr, Float, Instruction,
     Int, MoveRegs, NumRegs, NumRegsRhs, NumRepr, PhiRegs, PhiRepr, Ptr, Reg, RegKind, Str,
+    Terminator,
 };
 pub(super) fn elem_of_ty(ty: &StaticType) -> Result<StaticType, LowerError> {
     match ty {
@@ -348,9 +349,17 @@ impl IrLowerer<'_> {
                     .into(),
             ));
         }
+        // The fast store ends its block. The continuation is a real
+        // block the LOWERER owns: the store's emission may branch (the
+        // Hybrid verdict's dense/sparse diamond), so every statement
+        // after it lowers into `cont` and phis name real predecessor
+        // ids — the backend never invents a tail label.
+        let cont = self.new_block();
         self.emit(Instruction::TableSetFast(E::set_fast(
-            table, index, value, layout,
+            table, index, value, layout, cont,
         )));
+        self.terminate(Terminator::Jump(cont));
+        self.current_block = cont;
         Ok(())
     }
 
