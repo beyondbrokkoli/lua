@@ -61,7 +61,7 @@ script's code asked for:
 | `if arg[0] then`, `not arg[0]`        | `Table<Boolean>`   | `true` / `false`   |
 | `arg[0] == "x"`                       | `Table<String>`    | any word           |
 | `t[arg[0]]` (any key position: store, ctor entry, read) | `Table<Integer>` | 64-bit integers |
-| nothing but copies, prints, and passes | `Table<Any>`      | every word         |
+| nothing but copies, prints, passes, and `#` | `Table<Any>`      | every word         |
 
 One boundary, one cell type — a Float demand after an Int demand is a
 compile error, exactly like inline calls are monomorphic. Cells copied
@@ -70,15 +70,25 @@ way, a boundary read passed into an inline function pins through the
 parameter, and the pin survives loops and if/else joins. A `Table`
 element cannot be inferred: boundary cells hold scalars.
 
+**The written opt-in — mixed constructors choose the dynamic cell.**
+`local t = {"hello", 5, 2.5, true}` is a `Table<Any>`: mixing scalar
+kinds in one constructor is the script *explicitly choosing* the
+dynamic cell, no boundary involved. Every entry packs at its birth
+(`glm_any_from_int/float/bool/str` — the tag is written inside the
+runtime helper, never in the IR), scalar stores into an Any table pack
+the same way, and a table value may never enter one (cells hold
+scalars — the compile error names it). The provisional `#` admission
+below works for these cells exactly as for boundary cells.
+
 **No silent defaults — and no refusals either.** An element the script
 never demands a type for resolves to **Any**: the boundary's own
 dynamic cell. The reasoning is airtight by construction: the script
 checked clean without ever pinning the element, which means its cells
-were only ever **copied, printed, passed along, or returned** — never
-used in a typed position (arithmetic, ordering, conditions, table
-keys, stores into typed tables would each have pinned the element to
-a concrete scalar first). That exact usage set is what the Any cell
-serves, so the script is runnable as-is:
+were only ever **copied, printed, passed along, returned, or measured
+with `#`** — never used in a typed position (arithmetic, ordering,
+conditions, table keys, stores into typed tables would each have
+pinned the element to a concrete scalar first). That exact usage set
+is what the Any cell serves, so the script is runnable as-is:
 
 - Each cell is a 16-byte tagged word — payload in the low 64 bits,
   `GLM_ARG_*` tag in the high 64 — riding the same `GlmTable`
@@ -96,11 +106,27 @@ serves, so the script is runnable as-is:
   identity). Any typed use still pins the boundary monomorphically —
   the dynamic layer only ever covers the usage the static one
   provably left unconstrained.
+- `#` is the one operation that reads *into* a dynamic cell:
+  `#arg[0]` is the string kind's strlen, and every other kind dies at
+  runtime with a named error (`glm_any_len: '#' demands a string
+  cell`). The admission is provisional and replayed: the checker
+  records the use, lets the whole script's inference finish, and only
+  then decides — if a later typed use pinned the cells Integer, the
+  honest type error lands at the `#` line. The checker cannot know
+  the kind; the loud death is the strictness.
 
-Dynamics live at the boundary, and only there — inside the script,
-strict static monomorphic typing is unchanged (a script with a typed
-Int use still rejects a Float word at the host with the same message
-as before).
+**`#t` is the runtime border.** On tables, `#` reads one past the
+highest index ever stored — the table's living extent, maintained by
+the runtime on every store and committed by the reserves of proven
+full-fill loops. It is true for grown tables (`#t` after a fill loop
+is the fill's bound), far-key stores (the far key counts), row reads,
+and the host-built `arg` itself (`#arg` is the word count). A null
+table answers 0, the total-read convention.
+
+Dynamics live at the boundary and in explicitly mixed constructors —
+everywhere else inside the script, strict static monomorphic typing is
+unchanged (a script with a typed Int use still rejects a Float word at
+the host with the same message as before).
 
 **The contract is exported.** Every linked module — the `.so` and the
 `--exe` executable alike — carries:

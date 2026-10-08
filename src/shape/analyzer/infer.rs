@@ -184,13 +184,6 @@ impl Analyzer {
             }
             Expr::TableCtor(entries) => {
                 let id = self.lattice.sites[&(expr as *const Expr)];
-                if entries
-                    .iter()
-                    .enumerate()
-                    .all(|(i, (k, _))| matches!(k, CtorKey::Const(c) if *c == i as i64))
-                {
-                    self.layout.dense_ctor_len.insert(id, entries.len() as i64);
-                }
                 let mut first_elem_ty: Option<Ty> = None;
                 for (ei, (k, e)) in entries.iter().enumerate() {
                     // The slot map: a literal-key entry holding a
@@ -336,6 +329,15 @@ impl Analyzer {
                                 }
                             } else {
                                 signal!(rec.on(), trace::TRACE_INFER_TBL_MATCH);
+                                // The written opt-in: scalar kinds mixing
+                                // in one constructor chose the dynamic
+                                // cell at the join — the site flows as
+                                // Table<Any> from here (a Table in the
+                                // mix stays the Conflict above; cells
+                                // hold scalars).
+                                if matches!(joined, Any) && !matches!(expected, Any) {
+                                    self.probe(rec, trace::TRACE_CHK_ANY_MIXED_CTOR);
+                                }
                                 if joined != *expected {
                                     first_elem_ty = Some(joined);
                                 }

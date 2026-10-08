@@ -194,7 +194,6 @@ pub struct ShapeFacts {
     pub local_types: BTreeMap<(*const Stmt, String), StaticType>,
     pub row_reads: BTreeMap<usize, (String, usize)>,
     pub cell_children: BTreeMap<usize, BTreeSet<usize>>,
-    pub dense_ctor_len: BTreeMap<usize, i64>,
     // === inline closures ===
     /// The body's scope-exit frees key: the lowerer replays these at
     /// every inline site (analyzer, def-site walk).

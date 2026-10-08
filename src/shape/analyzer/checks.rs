@@ -23,9 +23,18 @@ impl Analyzer {
     }
 
     pub(super) fn check_len_operand(&mut self, rec: Gate, expr: &Expr) -> Result<(), ShapeError> {
-        // `#s` on a string: the length rides the NUL-terminated intern
-        // (strlen at the lowerer), no allocation — the dense-table gates
-        // below are table business only.
+        // `#` reads length through three real operations: strings via
+        // the intern's strlen, tables via the RUNTIME BORDER
+        // (glm_tbl_len — one past the highest index ever stored, true
+        // for grown, sparse, row-read, and host-built tables alike),
+        // and dynamic cells via glm_any_len's strlen-or-die. The old
+        // compile-time-border gate (a provably dense ctor, no stores,
+        // one border) is gone with the border it guarded — the
+        // analyzer's stake here reduces to the scalar rejection for
+        // its own typed names; the typing verdict, the Any admission,
+        // and the provisional-deferral replay are the checker's Len
+        // arm. The nil/moved lifetime gates already ran through
+        // check_table_use in check_uses.
         if let Expr::Identifier(name) = expr {
             let (_, bind) = self.resolve(rec, name)?;
             if matches!(bind.ty, Str) {
@@ -33,67 +42,10 @@ impl Analyzer {
             }
             if scalar(&bind.ty) && !matches!(bind.ty, Pending) {
                 return Err(ShapeError(format!(
-                    "Type Error: '#' requires a Table or String operand — '{name}' is a scalar"
+                    "Type Error: '#' requires a Table, String, or Any operand — '{name}' is a \
+                     scalar"
                 )));
             }
-        } else if let Expr::String(_) = expr {
-            return Ok(());
-        }
-        let (sites, name, row_read) = match expr {
-            Expr::TableCtor(_) => (
-                self.lattice
-                    .sites
-                    .get(&(expr as *const Expr))
-                    .into_iter()
-                    .copied()
-                    .collect::<Vec<_>>(),
-                "constructor".to_string(),
-                false,
-            ),
-            Expr::Identifier(name) => {
-                let (_, bind) = self.resolve(rec, name)?;
-                (
-                    bind.aliases
-                        .iter()
-                        .copied()
-                        .filter(|&s| !is_root(&s))
-                        .collect(),
-                    name.clone(),
-                    !bind.lineage.is_empty(),
-                )
-            }
-            _ => {
-                return Err(ShapeError(
-                    "Type Error: '#' requires a named table or a table constructor".to_string(),
-                ));
-            }
-        };
-        if row_read || sites.is_empty() {
-            return Err(ShapeError(format!(
-                "Type Error: '#' requires a provably dense table — '{name}' has \
-                 no compile-time border (a row read out of a table carries none)"
-            )));
-        }
-        for &s in &sites {
-            if !self.layout.dense_ctor_len.contains_key(&s)
-                || self.reads.user_store_sites.contains(&s)
-            {
-                return Err(ShapeError(format!(
-                    "Type Error: '#' requires a provably dense table — '{name}' has \
-                     no compile-time border (stores and sparse constructors make \
-                     borders unprovable)"
-                )));
-            }
-        }
-        let borders: BTreeSet<i64> = sites
-            .iter()
-            .filter_map(|s| self.layout.dense_ctor_len.get(s).copied())
-            .collect();
-        if borders.len() > 1 {
-            return Err(ShapeError(format!(
-                "Type Error: '#' requires one border — '{name}' may hold tables of \
-                 differing lengths"
-            )));
         }
         Ok(())
     }

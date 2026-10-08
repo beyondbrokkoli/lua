@@ -1,8 +1,8 @@
 use crate::ast::StaticType;
 use crate::ir::{
     BlockId, Bool, CellGet, CellSet, CellSetFast, CmpRegs, DbgBind, EntryKind, Instruction, Int,
-    IrProgram, MoveRegs, NumRegs, NumRegsRhs, PhiRegs, Ptr, Reg, RegKind, Repr, SourceLoc,
-    Terminator, UnaryNum,
+    IrProgram, MoveRegs, NumRegs, NumRegsRhs, PackRegs, PhiRegs, Ptr, Reg, RegKind, Repr,
+    SourceLoc, Terminator, UnaryNum,
 };
 use crate::shape::LayoutVerdict;
 use glm_rt::trace;
@@ -386,6 +386,12 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     let mut needs_sys_alloc_count_decl = false;
     let mut needs_any_print_decl = false;
     let mut needs_any_eq_decl = false;
+    let mut needs_any_len_decl = false;
+    let mut needs_tbl_len_decl = false;
+    // The four pack helpers, one bit each: 1=int, 2=float, 4=bool,
+    // 8=str — AnyPack's emission arms set their own bit and the decl
+    // tail writes exactly the named faces.
+    let mut needs_any_from: u8 = 0;
     // Whether the module's own code references ANY runtime symbol —
     // a module that references none (a bare `return arg` passthrough,
     // a pure arithmetic script) would pull no member out of the
@@ -463,6 +469,62 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
                         target.id, s.id
                     ));
                 }
+                Instruction::AnyLen { target, source } => {
+                    // The register seam: the tagged cell crosses whole
+                    // in the i128 argument — no spill slot, no tag test
+                    // in the IR (the tag is read once, inside the
+                    // helper).
+                    needs_any_len_decl = true;
+                    code.push_str(&format!(
+                        "  %v{} = call i64 @glm_any_len(i128 %v{})\n",
+                        target.id, source.id
+                    ));
+                }
+                Instruction::TableLen { target, table } => {
+                    // The runtime border — a header read, true for
+                    // every table shape (the header doc in rt.rs owns
+                    // the border's contract).
+                    needs_tbl_len_decl = true;
+                    code.push_str(&format!(
+                        "  %v{} = call i64 @glm_tbl_len(ptr %v{})\n",
+                        target.id, table.id
+                    ));
+                }
+                Instruction::AnyPack { target, source } => match source {
+                    PackRegs::Int(s) => {
+                        needs_any_from |= 1;
+                        code.push_str(&format!(
+                            "  %v{} = call i128 @glm_any_from_int(i64 %v{})\n",
+                            target.id, s.id
+                        ));
+                    }
+                    PackRegs::Float(s) => {
+                        needs_any_from |= 2;
+                        code.push_str(&format!(
+                            "  %v{} = call i128 @glm_any_from_float(double %v{})\n",
+                            target.id, s.id
+                        ));
+                    }
+                    PackRegs::Bool(s) => {
+                        // The ABI hands the helper its i8 0/1. Both
+                        // lines two-space indented — attach_dbg keys
+                        // on exactly that.
+                        needs_any_from |= 4;
+                        code.push_str(&format!(
+                            "  %v{t}.bz = zext i1 %v{src} to i8\n  %v{t} = call i128 \
+                             @glm_any_from_bool(i8 %v{t}.bz)\n",
+                            t = target.id,
+                            src = s.id
+                        ));
+                    }
+                    PackRegs::Str(s) => {
+                        needs_any_from |= 8;
+                        code.push_str(&format!(
+                            "  %v{} = call i128 @glm_any_from_str(ptr %v{})\n",
+                            target.id, s.id
+                        ));
+                    }
+                },
                 Instruction::Move(m) => emit_move(m, &mut code),
                 Instruction::LoadNull { target } => {
                     code.push_str(&format!("  %v{} = inttoptr i64 0 to ptr\n", target.id));
@@ -893,6 +955,24 @@ pub fn generate_llvm_ir(program: &IrProgram) -> Result<String, Vec<String>> {
     }
     if needs_any_eq_decl {
         head.push_str("declare i32 @glm_any_eq(i128, i128)\n");
+    }
+    if needs_any_len_decl {
+        head.push_str("declare i64 @glm_any_len(i128)\n");
+    }
+    if needs_tbl_len_decl {
+        head.push_str("declare i64 @glm_tbl_len(ptr)\n");
+    }
+    if needs_any_from & 1 != 0 {
+        head.push_str("declare i128 @glm_any_from_int(i64)\n");
+    }
+    if needs_any_from & 2 != 0 {
+        head.push_str("declare i128 @glm_any_from_float(double)\n");
+    }
+    if needs_any_from & 4 != 0 {
+        head.push_str("declare i128 @glm_any_from_bool(i8)\n");
+    }
+    if needs_any_from & 8 != 0 {
+        head.push_str("declare i128 @glm_any_from_str(ptr)\n");
     }
     if needs_dbg_value_decl {
         head.push_str("declare void @llvm.dbg.value(metadata, metadata, metadata)\n");

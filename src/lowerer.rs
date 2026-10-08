@@ -9,8 +9,8 @@ use crate::ir::{
 };
 use crate::shape::{ArmFreeEntry, DoExitFree, Keep, LayoutVerdict, ShapeFacts, TagSrc};
 use bridges::{
-    NumPair, NumSingle, OrdPair, bool_of, elem_of_ty, int_of, num_pair, num_single, ord_pair,
-    phi_of, phi_push, ptr_of, str_of,
+    NumPair, NumSingle, OrdPair, any_of, bool_of, elem_of_ty, int_of, num_pair, num_single,
+    ord_pair, phi_of, phi_push, ptr_of,
 };
 use glm_rt::{signal, trace};
 use std::collections::{BTreeMap, BTreeSet};
@@ -898,7 +898,15 @@ impl<'a> IrLowerer<'a> {
                     self.emit(Instruction::TableReserve { table, bound });
                 }
 
+                let store_elem = elem_of_ty(&t_ty)?;
                 let v_reg = self.lower_expr(value, None)?.reg;
+                // A dynamic-cell table packs scalar stores at the
+                // seam (the written opt-in's store half).
+                let v_reg = if matches!(store_elem, StaticType::Any) {
+                    self.pack_any(v_reg)?
+                } else {
+                    v_reg
+                };
 
                 // Capture the housed rows' keep registers: the store's
                 // value operand holds each row's pointer for the whole
@@ -913,11 +921,9 @@ impl<'a> IrLowerer<'a> {
 
                 if fast {
                     let layout = self.lookup_layout_for(obj)?;
-                    let elem = elem_of_ty(&t_ty)?;
-                    self.table_set_fast(t_reg, i_reg, v_reg, &elem, layout)?;
+                    self.table_set_fast(t_reg, i_reg, v_reg, &store_elem, layout)?;
                 } else {
-                    let elem = elem_of_ty(&t_ty)?;
-                    self.table_set(t_reg, i_reg, v_reg, &elem)?;
+                    self.table_set(t_reg, i_reg, v_reg, &store_elem)?;
                 }
 
                 if matches!(value, Expr::TableCtor(_))
@@ -1461,33 +1467,6 @@ impl<'a> IrLowerer<'a> {
         }
     }
 
-    fn def_of(&self, reg: RegId) -> Option<&Instruction> {
-        self.blocks
-            .iter()
-            .find_map(|b| b.instrs.iter().find(|i| i.def_reg() == Some(reg)))
-    }
-
-    fn alias_roots(&self, reg: RegId) -> BTreeSet<RegId> {
-        let mut roots = BTreeSet::new();
-        let mut visited = BTreeSet::new();
-        let mut stack = vec![reg];
-        while let Some(r) = stack.pop() {
-            if !visited.insert(r) {
-                continue;
-            }
-            match self.def_of(r) {
-                Some(Instruction::Move(m)) => stack.push(m.source_id()),
-                Some(Instruction::Phi(p)) => {
-                    stack.extend(p.arg_ids());
-                }
-                _ => {
-                    roots.insert(r);
-                }
-            }
-        }
-        roots
-    }
-
     fn lower_expr(&mut self, expr: &Expr, target: Option<RegId>) -> Result<TypedReg, LowerError> {
         let reg = target.unwrap_or_else(|| self.next_reg());
 
@@ -1699,6 +1678,14 @@ impl<'a> IrLowerer<'a> {
                 let mut elem_regs = Vec::with_capacity(entries.len());
                 for (_, e) in entries {
                     let TypedReg { reg: r, .. } = self.lower_expr(e, None)?;
+                    // A dynamic-cell site packs every scalar entry at
+                    // its birth (the written opt-in); entries already
+                    // in the Any repr pass through untouched.
+                    let r = if matches!(elem, StaticType::Any) {
+                        self.pack_any(r)?
+                    } else {
+                        r
+                    };
                     elem_regs.push(r);
                 }
 
@@ -2034,58 +2021,71 @@ impl<'a> IrLowerer<'a> {
                             ty: StaticType::Integer,
                         });
                     }
-                    // `#s` on a string name: strlen over the intern. A
-                    // pure SSA read — no register allocation, so `#t`
-                    // numbering below stays byte-identical.
-                    if let Expr::Identifier(name) = expr.as_ref() {
-                        let local = self.read_var(name)?;
-                        if matches!(local.ty, StaticType::String) {
-                            let s_reg = str_of(local.reg)?;
+                    // The operand is a real, evaluated value: strings
+                    // read the intern's strlen, tables the RUNTIME
+                    // BORDER (glm_tbl_len — the living extent, true
+                    // for grown, sparse, row-read, and host-built
+                    // tables alike), dynamic cells glm_any_len's
+                    // strlen-or-die. The compile-time border fold and
+                    // its site machinery are gone with the border they
+                    // guessed at; a ctor operand materializes like any
+                    // other operand and its temp free rides the
+                    // statement's plan.
+                    let TypedReg { reg: v, ty } = self.lower_expr(expr, None)?;
+                    match ty {
+                        StaticType::String => {
+                            // A string that traveled through a cell or
+                            // a join arrives as Ptr — the id-preserved
+                            // widening; both speak `ptr` to glm_str_len.
+                            let s_reg = match v {
+                                AnyReg::Str(r) => r,
+                                AnyReg::Ptr(r) => Reg::new(r.id),
+                                _ => {
+                                    return Err(LowerError(
+                                        "Lower Error: '#' on a String operand of another \
+                                         repr — the checker and the lowerer disagree"
+                                            .into(),
+                                    ));
+                                }
+                            };
                             self.emit(Instruction::StrLen {
                                 target: Reg::new(reg),
                                 s: s_reg,
-                            });
-                            return Ok(TypedReg {
-                                reg: AnyReg::Int(Reg::new(reg)),
-                                ty: StaticType::Integer,
-                            });
-                        }
-                    }
-                    let site = match expr.as_ref() {
-                        Expr::Identifier(name) => {
-                            let r = self.read_var(name)?.reg;
-                            let roots = self.alias_roots(r.id());
-                            self.handles
-                                .site_regs
-                                .iter()
-                                .find(|(_, (birth, _))| roots.contains(&birth.id))
-                                .map(|(s, _)| *s)
-                        }
-                        _ => {
-                            if matches!(expr.as_ref(), Expr::TableCtor(_)) {
-                                signal!(trace::TRACE_LEN_OPERAND_ELIDED);
-                            }
-                            self.shape
-                                .sites
-                                .get(&(expr.as_ref() as *const Expr))
-                                .copied()
-                        }
-                    };
-                    let len = site.and_then(|s| self.shape.dense_ctor_len.get(&s).copied());
-                    match len {
-                        Some(n) => {
-                            self.emit(Instruction::LoadInt {
-                                target: Reg::new(reg),
-                                val: n,
                             });
                             Ok(TypedReg {
                                 reg: AnyReg::Int(Reg::new(reg)),
                                 ty: StaticType::Integer,
                             })
                         }
-                        None => Err(LowerError(
-                            "Lower Error: '#' without a compile-time border — \
-                                 the density gate and the lowerer disagree"
+                        StaticType::Any => {
+                            let a_reg = any_of(v)?;
+                            self.emit(Instruction::AnyLen {
+                                target: Reg::new(reg),
+                                source: a_reg,
+                            });
+                            Ok(TypedReg {
+                                reg: AnyReg::Int(Reg::new(reg)),
+                                ty: StaticType::Integer,
+                            })
+                        }
+                        // A never-pinned unknown lowers in the Ptr
+                        // dialect — the table face — and reads the
+                        // runtime border like any table (total, null
+                        // answering 0).
+                        StaticType::Table(_) | StaticType::Unknown(_) => {
+                            let t_reg = ptr_of(v)?;
+                            self.emit(Instruction::TableLen {
+                                target: Reg::new(reg),
+                                table: t_reg,
+                            });
+                            Ok(TypedReg {
+                                reg: AnyReg::Int(Reg::new(reg)),
+                                ty: StaticType::Integer,
+                            })
+                        }
+                        _ => Err(LowerError(
+                            "Lower Error: '#' requires a String, table, or Any operand — \
+                             the checker and the lowerer disagree"
                                 .into(),
                         )),
                     }

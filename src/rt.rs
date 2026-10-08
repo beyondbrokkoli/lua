@@ -9,8 +9,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use crate::trace::{
-    TRACE_FAIL_DIV_ZERO, TRACE_FAIL_LEAK_DETECTED, TRACE_FAIL_NULL_ROW_STORE, TRACE_RT_ALLOC,
-    TRACE_RT_FREE, TRACE_RT_FREE_CHILD, TRACE_RT_STR_INTERN, TRACE_RT_STR_POOL_HIT,
+    TRACE_FAIL_ANY_LEN, TRACE_FAIL_DIV_ZERO, TRACE_FAIL_LEAK_DETECTED, TRACE_FAIL_NULL_ROW_STORE,
+    TRACE_RT_ALLOC, TRACE_RT_FREE, TRACE_RT_FREE_CHILD, TRACE_RT_STR_INTERN, TRACE_RT_STR_POOL_HIT,
 };
 
 #[repr(u8)]
@@ -34,7 +34,12 @@ pub enum TableMode {
 ///   sparse_map@40:  *mut HashMap — the far-key overflow map: born-Sparse
 ///                              tables fill it with every store, Dense tables
 ///                              allocate it lazily on the first far store
-/// Total: 48 bytes (6 machine words).
+///   border@48:      i64       — `#t`: one past the highest index ever
+///                              stored (any lane; far keys count)
+/// Total: 56 bytes (7 machine words). Every pre-border offset is
+/// unchanged — the field was appended at the runtime-border milestone,
+/// and every producer and consumer of headers lives in this crate
+/// (both hosts build through glm_tbl_new).
 ///
 /// THE ALIAS INVARIANT: only the data buffer moves; the header sits
 /// at one address for the table's whole lifetime. Every live copy of
@@ -63,6 +68,15 @@ pub struct GlmTable {
     /// The value lane is u128 so an Any (tagged) cell's whole 16
     /// bytes ride it; 8- and 1-byte cells sit in the low bits.
     pub sparse_map: *mut HashMap<i64, u128>,
+    /// The border — `#t`'s answer: one past the highest index ever
+    /// stored, any lane (far keys count). NOT the span watermark
+    /// (`len`, a doubling capacity): the border is the store extent,
+    /// a plain high-water mark maintained by set_core on every store
+    /// and committed by glm_tbl_reserve (the compiler reserves exactly
+    /// on proven full-fill loops, which is what covers the fast-store
+    /// path that bypasses set_core). Zero-fill reads and absent rows
+    /// never move it; `glm_tbl_len` reads it.
+    pub border: i64,
 }
 
 static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -198,6 +212,7 @@ pub unsafe extern "C" fn glm_tbl_new(esize: usize, flags: u8) -> *mut GlmTable {
         } else {
             std::ptr::null_mut()
         },
+        border: 0,
     }));
     ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
     unsafe { glm_trace_set(TRACE_RT_ALLOC) };
@@ -229,13 +244,33 @@ pub unsafe extern "C" fn glm_tbl_grow(t: *mut GlmTable, idx: i64) {
 
 /// # Safety
 /// `t` live from glm_tbl_new; on return the span covers `n` cells.
+/// The call also commits the border: the compiler emits a reserve
+/// exactly when it PROVED the coming fill covers 0..n (the
+/// reserved-loop conversion), so the fast stores that bypass set_core
+/// still leave a true border behind — n is the border that fill owes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn glm_tbl_reserve(t: *mut GlmTable, n: i64) {
     let tbl = unsafe { &mut *t };
     if tbl.mode != TableMode::Dense {
         return;
     }
+    if n > tbl.border {
+        tbl.border = n;
+    }
     unsafe { span_grow(t, n) };
+}
+
+/// `#t`: the array's border — one past the highest index ever stored,
+/// any lane (a far key counts; a born-Sparse table answers its map's
+/// high-water). A null table answers 0: `#` is a read, and reads are
+/// total in this engine (an absent row has no cells, the same
+/// philosophy as the zero-filling cell read).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glm_tbl_len(t: *const GlmTable) -> i64 {
+    if t.is_null() {
+        return 0;
+    }
+    unsafe { (*t).border }
 }
 
 // Phase 2 — the overflow map for far keys
@@ -574,6 +609,11 @@ pub unsafe extern "C" fn glm_tbl_set(t: *mut GlmTable, index: i64, val: *const u
 unsafe fn set_core<C: CellRepr>(t: *mut GlmTable, index: i64, cell: C) {
     let tbl = unsafe { &mut *t };
 
+    // The border: one past the highest index ever stored — `#t`'s
+    // answer, maintained here on every store the checked path performs
+    // (dense, far-map, and born-Sparse alike). Negative indices name
+    // no cell (the drop below), so they never move it.
+
     // Both faces below drop a negative index: it names no cell in
     // either layout (the array part addresses 0..up; the sparse map
     // is that same array sparsely addressed, not a general key
@@ -588,6 +628,7 @@ unsafe fn set_core<C: CellRepr>(t: *mut GlmTable, index: i64, cell: C) {
         if index < 0 {
             return;
         }
+        tbl.border = tbl.border.max(index.saturating_add(1));
         let map = unsafe { &mut *tbl.sparse_map };
         map.insert(index, cell.to_lane());
         return;
@@ -600,6 +641,7 @@ unsafe fn set_core<C: CellRepr>(t: *mut GlmTable, index: i64, cell: C) {
     // raw GEP stores stay in-bounds and live against every store the
     // checked path performs, whatever the key computes to at runtime.
     if index > tbl.len.saturating_add(SPARSE_THRESHOLD) {
+        tbl.border = tbl.border.max(index.saturating_add(1));
         unsafe { overflow_map(t).insert(index, cell.to_lane()) };
         return;
     }
@@ -608,6 +650,7 @@ unsafe fn set_core<C: CellRepr>(t: *mut GlmTable, index: i64, cell: C) {
     if index < 0 {
         return;
     }
+    tbl.border = tbl.border.max(index.saturating_add(1));
     unsafe { span_grow(t, index.wrapping_add(1)) };
     let ptr = unsafe { tbl.data.add(index as usize * C::ESIZE) };
     unsafe { C::store_span(ptr, cell) };
@@ -1208,6 +1251,76 @@ pub extern "C" fn glm_any_print(v: i128) {
 #[unsafe(no_mangle)]
 pub extern "C" fn glm_any_eq(l: i128, r: i128) -> i32 {
     i32::from(l == r)
+}
+
+/// `#cell`: the dynamic cell's length — the string kind answers strlen
+/// of its interned payload; every other kind DIES, loudly and by name
+/// (the checker admitted the operand without ever knowing the kind —
+/// the host's CLI word picked it at load — so strictness lands here,
+/// as a named runtime death: the glm_div_zero_guard precedent). A
+/// silent 0 for non-strings would be a lie a dynamic cell must never
+/// tell.
+#[unsafe(no_mangle)]
+pub extern "C" fn glm_any_len(v: i128) -> i64 {
+    let kind_word = |k: i32| match k {
+        GLM_ARG_INT => "int",
+        GLM_ARG_FLOAT => "float",
+        GLM_ARG_BOOL => "bool",
+        GLM_ARG_STRING => "string",
+        _ => "unknown",
+    };
+    match any_tag(v) {
+        GLM_ARG_STRING => {
+            let p = any_payload(v) as *const u8;
+            if p.is_null() {
+                return 0;
+            }
+            unsafe { glm_str_len(p) }
+        }
+        k => {
+            unsafe { glm_trace_set(TRACE_FAIL_ANY_LEN) };
+            eprintln!(
+                "glm runtime error: glm_any_len: '#' demands a string cell, got kind {} ({})",
+                k,
+                kind_word(k)
+            );
+            std::process::abort();
+        }
+    }
+}
+
+/// The four written opt-ins into the dynamic cell: pack one scalar as
+/// a tagged word — a mixed constructor's entries and a scalar store
+/// into an Any table lower to these. The tag is written exactly once,
+/// INSIDE the helpers (the emitted IR names the helper and never the
+/// tag — tag blindness holds on the pack side exactly as on the read
+/// side).
+#[unsafe(no_mangle)]
+pub extern "C" fn glm_any_from_int(v: i64) -> i128 {
+    any_pack(GLM_ARG_INT, v as u64)
+}
+
+/// See `glm_any_from_int` — the float packs its bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn glm_any_from_float(v: f64) -> i128 {
+    any_pack(GLM_ARG_FLOAT, v.to_bits())
+}
+
+/// See `glm_any_from_int` — the ABI passes the i1 as an i8 0/1.
+#[unsafe(no_mangle)]
+pub extern "C" fn glm_any_from_bool(v: bool) -> i128 {
+    any_pack(GLM_ARG_BOOL, u64::from(v))
+}
+
+/// See `glm_any_from_int` — a string packs its interned pointer (the
+/// pool's identity guarantee rides the payload untouched).
+///
+/// # Safety
+/// `p` NUL-terminated and readable through the terminator for as long
+/// as the cell lives (an interned literal: forever).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glm_any_from_str(p: *const u8) -> i128 {
+    any_pack(GLM_ARG_STRING, p as u64)
 }
 
 /// One word classified under the declared precedence — pure, no

@@ -4,7 +4,9 @@ impl Recorded {
         if self.ledger.conflict_reported.insert(id) {
             let line = self.ctor_lines[id];
             self.ledger.diagnostics.push(format!(
-                "line {line}: Type Error: heterogeneous tables are not supported (table site #{id})"
+                "line {line}: Type Error: a table's cells hold one scalar kind — mixing scalar \
+                 kinds chooses the dynamic cell (Any), but a table value never rides a cell \
+                 (table site #{id})"
             ));
         }
         crate::ast::StaticType::Unknown(id)
@@ -81,6 +83,7 @@ impl Recorded {
                 signal!(self.recording, trace::TRACE_ELEM_FALLBACK_STR);
                 crate::ast::StaticType::String
             }
+            Any => crate::ast::StaticType::Any,
             Conflict => {
                 signal!(self.recording, trace::TRACE_ELEM_FALLBACK_CONFLICT);
                 self.report_conflict(id)
@@ -112,6 +115,7 @@ impl Recorded {
                 signal!(self.recording, trace::TRACE_TY_STATIC_STR);
                 crate::ast::StaticType::String
             }
+            Any => crate::ast::StaticType::Any,
             Tbl(inner) => {
                 signal!(self.recording, trace::TRACE_TY_STATIC_TBL);
                 crate::ast::StaticType::Table(Box::new(self.ty_to_static(inner, site)))

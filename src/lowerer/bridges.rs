@@ -1,9 +1,9 @@
 use super::{IrLowerer, LowerError};
 use crate::ast::StaticType;
 use crate::ir::{
-    AnyReg, BlockId, Bool, Byte, CellRepr, CellTy, CellVal, CmpRegs, CmpRepr, Float, Instruction,
-    Int, MoveRegs, NumRegs, NumRegsRhs, NumRepr, PhiRegs, PhiRepr, Ptr, Reg, RegKind, Str,
-    Terminator,
+    Any, AnyReg, BlockId, Bool, Byte, CellRepr, CellTy, CellVal, CmpRegs, CmpRepr, Float,
+    Instruction, Int, MoveRegs, NumRegs, NumRegsRhs, NumRepr, PackRegs, PhiRegs, PhiRepr, Ptr, Reg,
+    RegKind, Terminator,
 };
 pub(super) fn elem_of_ty(ty: &StaticType) -> Result<StaticType, LowerError> {
     match ty {
@@ -44,10 +44,10 @@ pub(super) fn ptr_of(r: AnyReg) -> Result<Reg<Ptr>, LowerError> {
     }
 }
 
-pub(super) fn str_of(r: AnyReg) -> Result<Reg<Str>, LowerError> {
+pub(super) fn any_of(r: AnyReg) -> Result<Reg<Any>, LowerError> {
     match r {
-        AnyReg::Str(x) => Ok(x),
-        _ => Err(repr_mismatch("a String operand position")),
+        AnyReg::Any(x) => Ok(x),
+        _ => Err(repr_mismatch("a dynamic-cell operand position")),
     }
 }
 
@@ -160,6 +160,38 @@ pub(super) fn phi_push(phi: &mut PhiRegs, block: BlockId, reg: AnyReg) -> Result
 }
 
 impl IrLowerer<'_> {
+    /// The written opt-in's pack: one scalar into the dynamic cell
+    /// (a mixed ctor's entry, a scalar store into an Any table) —
+    /// glm_any_from_int/float/bool/str, the tag written inside the
+    /// helper. A value already in the Any repr passes through; a
+    /// table pointer is the mismatch the checker refused (this is
+    /// the backstop, not the gate).
+    pub(super) fn pack_any(&mut self, v: AnyReg) -> Result<AnyReg, LowerError> {
+        if matches!(v, AnyReg::Any(_)) {
+            return Ok(v);
+        }
+        let target = self.next_reg();
+        let source = match v {
+            AnyReg::Int(r) => PackRegs::Int(r),
+            AnyReg::Float(r) => PackRegs::Float(r),
+            AnyReg::Bool(r) => PackRegs::Bool(r),
+            AnyReg::Str(r) => PackRegs::Str(r),
+            AnyReg::Ptr(_) | AnyReg::Byte(_) => {
+                return Err(LowerError(
+                    "Lower Error: a dynamic cell holds scalars — a table value cannot be \
+                     packed into one (the checker and the lowerer disagree)"
+                        .into(),
+                ));
+            }
+            AnyReg::Any(_) => unreachable!("the early return handled the Any repr"),
+        };
+        self.emit(Instruction::AnyPack {
+            target: Reg::new(target),
+            source,
+        });
+        Ok(AnyReg::Any(Reg::new(target)))
+    }
+
     pub(super) fn num3<N: NumRepr>(
         &mut self,
         ctor: fn(NumRegs) -> Instruction,

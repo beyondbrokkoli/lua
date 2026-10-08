@@ -75,7 +75,8 @@ when needed, using the commands below — every one prints dense, one-line outpu
 
 `GlmTable` is `#[repr(C)]` (see `src/rt.rs`) — `parg` reads raw offsets:
 `data`+0, `len`+8, `reserve`+16, `esize`+24, `mode`(u8)+32 (0=dense, 1=sparse),
-`contains_tables`(u8)+33, `sparse_map`+40.
+`contains_tables`(u8)+33, `sparse_map`+40, `border`(i64)+48 (`#t`'s answer —
+one past the highest index ever stored; `len` is the span watermark, not it).
 
 Cell semantics by `esize`: **1** = bool (`b:`), **8** = scalar — printed as
 `i:` (signed), `u:` (hex) and `f:` (bit-cast double) together; the script's type

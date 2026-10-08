@@ -267,6 +267,18 @@ pub enum CellVal {
     Any(Reg<Any>),
 }
 
+/// The scalar sources an `AnyPack` admits: the four scalar kinds a
+/// dynamic cell can hold. A table pointer is deliberately absent —
+/// cells hold scalars, and the checker refuses tables at every pack
+/// site, so the lowerer's mismatch answer is the backstop.
+#[derive(Debug, Clone, Copy)]
+pub enum PackRegs {
+    Int(Reg<Int>),
+    Float(Reg<Float>),
+    Bool(Reg<Bool>),
+    Str(Reg<Str>),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellTy {
     Int,
@@ -571,19 +583,6 @@ impl PhiRegs {
             PhiRegs::Bool { target, .. } => target.id,
             PhiRegs::Ptr { target, .. } => target.id,
             PhiRegs::Any { target, .. } => target.id,
-        }
-    }
-
-    pub fn arg_ids(&self) -> Vec<RegId> {
-        fn ids<R: Repr>(args: &[(BlockId, Reg<R>)]) -> Vec<RegId> {
-            args.iter().map(|(_, r)| r.id).collect()
-        }
-        match self {
-            PhiRegs::Int { args, .. } => ids(args),
-            PhiRegs::Float { args, .. } => ids(args),
-            PhiRegs::Bool { args, .. } => ids(args),
-            PhiRegs::Ptr { args, .. } => ids(args),
-            PhiRegs::Any { args, .. } => ids(args),
         }
     }
 
@@ -1008,84 +1007,6 @@ impl PhiRepr for Any {
     }
 }
 
-impl MoveRegs {
-    pub fn target_id(&self) -> RegId {
-        match self {
-            MoveRegs::Int { target, .. } => target.id,
-            MoveRegs::Float { target, .. } => target.id,
-            MoveRegs::Bool { target, .. } => target.id,
-            MoveRegs::Str { target, .. } => target.id,
-            MoveRegs::Ptr { target, .. } => target.id,
-            MoveRegs::Byte { target, .. } => target.id,
-            MoveRegs::Any { target, .. } => target.id,
-        }
-    }
-    pub fn source_id(&self) -> RegId {
-        match self {
-            MoveRegs::Int { source, .. } => source.id,
-            MoveRegs::Float { source, .. } => source.id,
-            MoveRegs::Bool { source, .. } => source.id,
-            MoveRegs::Str { source, .. } => source.id,
-            MoveRegs::Ptr { source, .. } => source.id,
-            MoveRegs::Byte { source, .. } => source.id,
-            MoveRegs::Any { source, .. } => source.id,
-        }
-    }
-}
-
-impl CellGet {
-    pub fn target_id(&self) -> RegId {
-        match self {
-            CellGet::Int { target, .. } => target.id,
-            CellGet::Float { target, .. } => target.id,
-            CellGet::Bool { target, .. } => target.id,
-            CellGet::Ptr { target, .. } => target.id,
-            CellGet::Byte { target, .. } => target.id,
-            CellGet::Any { target, .. } => target.id,
-        }
-    }
-}
-
-impl NumRegs {
-    pub fn target_id(&self) -> RegId {
-        match self {
-            NumRegs::Int { target, .. } => target.id,
-            NumRegs::Float { target, .. } => target.id,
-        }
-    }
-}
-
-impl NumRegsRhs {
-    pub fn target_id(&self) -> RegId {
-        match self {
-            NumRegsRhs::Int { target, .. } => target.id,
-            NumRegsRhs::Float { target, .. } => target.id,
-        }
-    }
-}
-
-impl UnaryNum {
-    pub fn target_id(&self) -> RegId {
-        match self {
-            UnaryNum::Int { target, .. } => target.id,
-            UnaryNum::Float { target, .. } => target.id,
-        }
-    }
-}
-
-impl CmpRegs {
-    pub fn target_id(&self) -> RegId {
-        match self {
-            CmpRegs::Int { target, .. } => target.id,
-            CmpRegs::Float { target, .. } => target.id,
-            CmpRegs::Bool { target, .. } => target.id,
-            CmpRegs::Str { target, .. } => target.id,
-            CmpRegs::Ptr { target, .. } => target.id,
-            CmpRegs::Any { target, .. } => target.id,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum Terminator {
     Jump(BlockId),
@@ -1130,6 +1051,30 @@ pub enum Instruction {
     StrLen {
         target: Reg<Int>,
         s: Reg<Str>,
+    },
+    // `#cell`: the length of a dynamic cell — glm_any_len's
+    // strlen-or-die contract. The operand crosses whole in the i128
+    // register pair (no spill slot, no tag test in the IR); the tag
+    // is read exactly once, inside the helper.
+    AnyLen {
+        target: Reg<Int>,
+        source: Reg<Any>,
+    },
+    // `#t`: the table's border — one past the highest index ever
+    // stored, any lane (glm_tbl_len reads the header field the
+    // runtime maintains). True for grown, sparse, and host-built
+    // tables alike: the living extent, not the constructor's arity.
+    TableLen {
+        target: Reg<Int>,
+        table: Reg<Ptr>,
+    },
+    // The written opt-in: pack one scalar into a dynamic cell
+    // (glm_any_from_int/float/bool/str). A mixed constructor's entry
+    // or a scalar store into an Any table lowers to exactly one of
+    // these — the tag is written inside the helper, never in the IR.
+    AnyPack {
+        target: Reg<Any>,
+        source: PackRegs,
     },
     LoadNull {
         target: Reg<Ptr>,
@@ -1203,42 +1148,6 @@ pub enum Instruction {
     Print {
         operands: Vec<(RegId, StaticType)>,
     },
-}
-
-impl Instruction {
-    pub fn def_reg(&self) -> Option<RegId> {
-        match self {
-            Instruction::LoadInt { target, .. } => Some(target.id),
-            Instruction::LoadFloat { target, .. } => Some(target.id),
-            Instruction::LoadBool { target, .. } => Some(target.id),
-            Instruction::LoadAnyZero { target } => Some(target.id),
-            Instruction::LoadString { target, .. } => Some(target.id),
-            Instruction::StrLen { target, .. } => Some(target.id),
-            Instruction::LoadNull { target } => Some(target.id),
-            Instruction::BindArgs { target } => Some(target.id),
-            Instruction::TableNew { target, .. } => Some(target.id),
-            Instruction::Sitofp { target, .. } => Some(target.id),
-            Instruction::Div { target, .. } => Some(target.id),
-            Instruction::Not { target, .. } => Some(target.id),
-            Instruction::SysAllocCount { target } => Some(target.id),
-            Instruction::Move(m) => Some(m.target_id()),
-            Instruction::TableGet(g) => Some(g.target_id()),
-            Instruction::Add(n) | Instruction::Sub(n) | Instruction::Mul(n) => Some(n.target_id()),
-            Instruction::IntDiv(n) | Instruction::Mod(n) => Some(n.target_id()),
-            Instruction::Neg(u) => Some(u.target_id()),
-            Instruction::Less(c)
-            | Instruction::Leq(c)
-            | Instruction::Geq(c)
-            | Instruction::Eq(c) => Some(c.target_id()),
-            Instruction::Phi(p) => Some(p.target_id()),
-            Instruction::Print { .. }
-            | Instruction::TableReserve { .. }
-            | Instruction::TableSetFast { .. }
-            | Instruction::TableSet { .. }
-            | Instruction::TableFree { .. }
-            | Instruction::TableFreeExcept { .. } => None,
-        }
-    }
 }
 
 /// A source position carried from the parser through lowering into

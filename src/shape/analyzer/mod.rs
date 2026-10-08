@@ -10,7 +10,7 @@ use super::core::{
 use super::facts::ShapeFacts;
 use super::helpers::{const_key_value, extract_guard, merge_table_scopes};
 use super::ty::{Ty, arith_ty, join_ty, scalar};
-use Ty::{Bool, Conflict, Flt, Int, Pending, Str, Tbl};
+use Ty::{Any, Bool, Conflict, Flt, Int, Pending, Str, Tbl};
 // The boundary seed mints its element Pending — children resolve their
 // own Ints through the flat re-export below.
 // Module-name binding: children resolve `super::facts::` through here
@@ -222,7 +222,6 @@ struct ReadSideState {
 struct LayoutFactsState {
     name_dense: BTreeMap<(String, usize), bool>,
     verdicts: Vec<LayoutVerdict>,
-    dense_ctor_len: BTreeMap<usize, i64>,
 }
 
 /// Every table-constructor site inside a function body (nested
@@ -516,7 +515,6 @@ pub fn analyze(ctx: &AnalysisContext<'_>) -> ShapeFacts {
         layout: LayoutFactsState {
             name_dense: BTreeMap::new(),
             verdicts: vec![LayoutVerdict::Growing; n],
-            dense_ctor_len: BTreeMap::new(),
         },
         stmt_lines: ctx.stmt_lines.clone(),
         ctor_lines: ctx.ctor_lines.clone(),
@@ -721,7 +719,6 @@ impl Recorded {
             local_types: BTreeMap::new(),
             row_reads: std::mem::take(&mut self.reads.row_reads),
             cell_children,
-            dense_ctor_len: std::mem::take(&mut self.layout.dense_ctor_len),
             fn_scope_keys: self.fn_scope_keys,
             join_tags: self.join_tags,
             call_tags: self.call_tags,

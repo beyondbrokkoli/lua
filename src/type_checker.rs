@@ -46,6 +46,17 @@ pub struct TypeChecker<'a> {
     // seed's read flag. Cleared never — later shadows cannot un-read
     // the seed.
     seed_read: bool,
+    // The B-path ledger: '#' operands admitted PROVISIONALLY (their
+    // type was an unresolved unknown at the use site — a boundary
+    // cell, a parameter, a bare local). The whole script's inference
+    // gets the last word: the replay after the finalizer resolves
+    // each recorded type — Any admits (signal 150), a retroactive
+    // scalar pin refuses at the recorded line.
+    len_deferrals: Vec<(StaticType, Option<usize>)>,
+    // The statement currently being checked — the deferral's error
+    // anchor. An inline body checked inside a call site anchors to
+    // the call's own statement (the body is checked within it).
+    cur_stmt: Option<*const Stmt>,
 }
 
 /// The head unknown of a freshly seeded boundary element — fresh_unknown
@@ -70,6 +81,8 @@ impl<'a> TypeChecker<'a> {
             inline_stack: Vec::new(),
             arg_elem_id: None,
             seed_read: false,
+            len_deferrals: Vec::new(),
+            cur_stmt: None,
         }
     }
 
@@ -144,7 +157,38 @@ impl<'a> TypeChecker<'a> {
         self.check_block(stmts);
         self.finalize_boundary_elem();
         self.resolve_all_scopes();
+        self.replay_len_deferrals();
         self.shape.check_row_reads();
+    }
+
+    /// The B-path's last word. Each '#' whose operand the walk could
+    /// not pin was admitted provisionally and recorded; the finished
+    /// substitution set now names what the operand REALLY is — Any
+    /// (the boundary's resolution or a mixed ctor's cell) admits with
+    /// the signal, a scalar a later typed use retroactively pinned
+    /// refuses at the recorded line, tables and strings were already
+    /// fine, and a never-pinned unknown stays admitted (it lowers as
+    /// the Ptr dialect and reads the runtime border — total, like
+    /// every read in this engine).
+    fn replay_len_deferrals(&mut self) {
+        for (ty, line) in std::mem::take(&mut self.len_deferrals) {
+            match self.resolve_var(&ty) {
+                StaticType::Table(_) | StaticType::String | StaticType::Unknown(_) => {}
+                StaticType::Any => {
+                    signal!(trace::TRACE_CHK_ANY_LEN);
+                }
+                other => {
+                    let msg = format!(
+                        "Type Error: '#' requires a Table, String, or Any operand, got {}",
+                        type_name(&other)
+                    );
+                    self.shape.diagnostics.push(match line {
+                        Some(l) => format!("line {l}: {msg}"),
+                        None => msg,
+                    });
+                }
+            }
+        }
     }
 
     /// Resolve the boundary element to the type the script's own code
@@ -188,6 +232,16 @@ impl<'a> TypeChecker<'a> {
                      a table element cannot be inferred from 'arg[i]' usage"
                         .to_string(),
                 );
+                return;
+            }
+            // The seed was already bound to Any by the script itself —
+            // a mixed constructor carried a boundary cell into the
+            // dynamic cell (the written opt-in). Same destination as
+            // the unresolved seed, same signal: the boundary is Any.
+            StaticType::Any => {
+                signal!(trace::TRACE_BOUNDARY_ELEM_ANY);
+                self.shape.boundary_elem = Some(StaticType::Any);
+                self.resolve_fn_defs_through_subs();
                 return;
             }
             concrete => concrete,
@@ -304,6 +358,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
+        // The deferral anchor: any provisional '#' admission inside
+        // this statement (an inline body included — it is checked
+        // within its call's statement) reports at this line.
+        self.cur_stmt = Some(stmt as *const Stmt);
         match stmt {
             Stmt::LocalDecl { names, exprs } => {
                 let mut expr_types = Vec::with_capacity(exprs.len());
@@ -378,6 +436,32 @@ impl<'a> TypeChecker<'a> {
                 self.check_index_key(key)?;
 
                 let val_ty = self.check_expr(value)?;
+
+                // A dynamic-cell table absorbs scalar stores — the
+                // written opt-in's store half: the lowerer packs the
+                // value through glm_any_from_*. An unknown value
+                // (a boundary cell) unifies into Any and binds; a
+                // TABLE value never rides a dynamic cell; and the
+                // reverse direction — an Any value into a typed table
+                // — stays the unify conflict below (no unpack: the
+                // interpreter cliff stays closed).
+                if matches!(self.resolve_var(&elem), StaticType::Any) {
+                    match self.resolve_var(&val_ty) {
+                        StaticType::Integer
+                        | StaticType::Float
+                        | StaticType::Boolean
+                        | StaticType::String
+                        | StaticType::Any
+                        | StaticType::Unknown(_) => return Ok(()),
+                        StaticType::Table(_) => {
+                            return Err(
+                                "Type Error: an Any table's cells hold scalars — a table value \
+                                 cannot enter a dynamic cell"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
 
                 if matches!(elem, StaticType::Table(_)) && matches!(val_ty, StaticType::Table(_)) {
                     let expected_inner = match &elem {
@@ -566,6 +650,26 @@ impl<'a> TypeChecker<'a> {
                             self.unify(expected_inner, actual_inner)?;
                         }
                     } else if ty != elem {
+                        // A dynamic-cell site absorbs scalar entries —
+                        // the written opt-in: the lowerer packs each
+                        // through glm_any_from_* (the analyzer's mixed
+                        // join made the site Any). A concrete scalar
+                        // simply packs; an unresolved unknown (a
+                        // boundary cell) unifies so it BINDS to Any;
+                        // a table value never rides a dynamic cell.
+                        if matches!(elem, StaticType::Any) {
+                            if matches!(ty, StaticType::Table(_)) {
+                                return Err(format!(
+                                    "Type Error: an Any table's cells hold scalars — a table \
+                                     value cannot enter a dynamic cell ({} after Any)",
+                                    type_name(&ty)
+                                ));
+                            }
+                            if matches!(ty, StaticType::Unknown(_)) {
+                                self.unify(&elem, &ty)?;
+                            }
+                            continue;
+                        }
                         // A ctor element disagreeing with the site's
                         // running element is a conflict — unless one
                         // side is an unresolved unknown (a boundary
@@ -731,8 +835,32 @@ impl<'a> TypeChecker<'a> {
                     }
                     UnOp::Len => match self.resolve_var(&t) {
                         StaticType::Table(_) | StaticType::String => Ok(StaticType::Integer),
+                        // The first Any operation: a dynamic cell in
+                        // '#' reads its length through glm_any_len —
+                        // strlen for the string kind, a named runtime
+                        // death for every other (the checker admits
+                        // the operand tag-blind; the host's word
+                        // picked the kind at load).
+                        StaticType::Any => {
+                            signal!(trace::TRACE_CHK_ANY_LEN);
+                            Ok(StaticType::Integer)
+                        }
+                        // The B-path: the operand cannot be pinned
+                        // YET — a boundary cell, a parameter, a bare
+                        // local. Admit provisionally and record; the
+                        // replay after the finalizer gives the whole
+                        // script's inference the last word (a later
+                        // typed use pins the cell and the honest
+                        // refusal lands at this line).
+                        unknown @ StaticType::Unknown(_) => {
+                            let line = self
+                                .cur_stmt
+                                .and_then(|s| self.shape.stmt_lines.get(&s).copied());
+                            self.len_deferrals.push((unknown, line));
+                            Ok(StaticType::Integer)
+                        }
                         _ => Err(format!(
-                            "Type Error: '#' requires a Table or String operand, got {}",
+                            "Type Error: '#' requires a Table, String, or Any operand, got {}",
                             type_name(&t)
                         )),
                     },
