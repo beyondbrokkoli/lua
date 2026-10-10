@@ -15,11 +15,7 @@ i32  glm_arg_kind(void);    /* -1 none, 0 int, 1 float, 2 bool, 3 string, 4 any 
 
 `Cargo.toml` declares exactly **one** external crate —
 [`logos`](https://github.com/maciejhirsz/logos) (`0.16.1`), a derive-macro
-lexer generator. The token enum in `src/lexer.rs` is `#[derive(Logos)]`,
-with `#[logos(skip ...)]` rules for whitespace, `--` line comments,
-`--[[ ... ]]` block comments, and the shebang; logos compiles those
-patterns into a state machine *at compile time*, so lexing is a zero-cost
-walk with no runtime dependency.
+lexer generator.
 
 ## The language
 
@@ -138,7 +134,7 @@ LuaJIT FFI, a Rust runner) queries the module instead of guessing.
 `print(...)` is variadic and tab-separates its arguments;
 `sys_alloc_count()` is the live-allocation ledger.
 
-## Using the human tools
+## Usage
 
 ### Build and run
 
@@ -150,7 +146,37 @@ cargo build --release
 ./target/debug/glm --exe program.lua       # -> ./glm_out, a standalone executable
 ```
 
-### The steering shell (`tools/shell.lua`)
+## rust-gdb
+
+### Setup
+
+GDB's auto-load safe-path gate declines a local `./.gdbinit` until its
+path has been granted.
+`~/.gdbinit`:
+
+```gdb
+add-auto-load-safe-path /home/halim/lua/.gdbinit
+```
+
+Then, from the repo root (the host resolves `./libglm_out.so` and the
+shims relative to it):
+
+```sh
+cargo build
+rust-gdb -q --args ./target/debug/glm --debug cases/<case>.lua <args...>
+```
+
+No dotfile edit? The explicit form always works, gate or no gate (`-nx`
+skips both init files, `-x` loads the shim directly), and `-q` silences the
+version greeting. One border to respect: gdb's own options end at `--args` —
+everything after it is the case's boundary argv, so a flag placed there rides
+into the script, never into gdb.
+
+```sh
+rust-gdb -q -nx -x .gdbinit --args ./target/debug/glm --debug cases/<case>.lua <args...>
+```
+
+### Custom shell (`tools/shell.lua`)
 
 The comfortable way to drive everything, from the repo root:
 
@@ -187,33 +213,7 @@ prints the full register dashboard at every stop:
 Case names accept every spelling — bare, `.lua`-less, `cases/`-prefixed,
 absolute. Ctrl+C always restores the terminal; no gdb is left orphaned.
 
-### Setup
-
-GDB's auto-load safe-path gate declines a local `./.gdbinit` until its
-path has been granted.
-`~/.gdbinit`:
-
-```gdb
-add-auto-load-safe-path /home/halim/lua/.gdbinit
-```
-
-Then, from the repo root (the host resolves `./libglm_out.so` and the
-shims relative to it):
-
-```sh
-cargo build
-rust-gdb -q --args ./target/debug/glm --debug cases/<case>.lua <args...>
-```
-
-No dotfile edit? The explicit form always works, gate or no gate (`-nx`
-skips both init files, `-x` loads the shim directly), and `-q` silences the
-version greeting. One border to respect: gdb's own options end at `--args` —
-everything after it is the case's boundary argv, so a flag placed there rides
-into the script, never into gdb.
-
-```sh
-rust-gdb -q -nx -x .gdbinit --args ./target/debug/glm --debug cases/<case>.lua <args...>
-```
+### Details
 
 Every stop prints the dashboard: `[Ret/Stack]` (RAX/RSP/RBP), `[Args
 1-3]`/`[Args 4-6]`, `[Scratch]` (R10/R11/RIP), `[Saved]` (RBX–R15 +

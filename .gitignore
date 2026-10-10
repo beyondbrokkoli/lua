@@ -20,3 +20,4 @@ libglm_out.so
 !/README.md
 !/AGENTS.md
 .zcodeignore
+/interop/*.so
