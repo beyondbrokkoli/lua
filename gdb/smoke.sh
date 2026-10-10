@@ -24,10 +24,20 @@
 #     multi-line form), decoded cells, the elided backtrace
 #     `#1 glm::run_boundary main.rs:...`, igrep's filtered lookahead
 #     (agent: exactly 200 walked with the plain summary; human: the
-#     call ahead surfaced with the cyan summary line), and the prologue
+#     call ahead surfaced with the cyan summary line, every line wearing
+#     gdb's own disassembler styling rebuilt from `show style` — in a
+#     batch run ONLY igrep emits styled instruction lines, so the raw
+#     `=> \e[..m0x` grep pins the rebuild itself), the prologue
 #     trio: pstack's window from $rsp, the $rbp-anchored view flagging
 #     the frame base, and stkwatch catching the `call` push the return
-#     address one `si` later (+0 decodes to glm_exec+N, rsp 8 lower).
+#     address one `si` later (+0 decodes to glm_exec+N, rsp 8 lower),
+#     and (human only) the dashboard's [Bytes] opcode row: the
+#     instruction line stays native x/1i verbatim (gdb's own disassembler
+#     styling and tab placement), with the raw opcode bytes on their own
+#     labeled row — x/1i cannot show bytes, so that row is
+#     _glm_opcodes_line, pure Python API; sparse pins it at EVERY one of
+#     its six stops, proving the top-level definition beats the
+#     registration landmine (the first stop already prints it).
 #
 #   any — the dynamic-cell adoption pipeline (cases/any_adopt_store.lua):
 #     't' is born Integer-celled and the String store `t[2] = "five"`
@@ -68,7 +78,8 @@
 #     transcript carries none of clang's poison diagnostics.
 #
 # Agent-only aggregate markers: every agent transcript must be ANSI-free
-# (that face's entire reason to exist) and carry no per-stop dashboard.
+# (that face's entire reason to exist), carry no per-stop dashboard, and
+# carry no [Bytes] opcode row (it is human-only too).
 #
 # Marker failures map to the config landmines (AGENTS.md): `xqv` dying
 # with `No symbol 'unsigned'` = the language sandwich was stripped;
@@ -156,7 +167,7 @@ gdb_run() { # gdb_run <face> <label> <script> [glm args...]
   elif [ "$face" = agent ]; then config=.gdbinit.agent
   else config=.gdbinit; fi
   # GLM_GDB_FACE pins the face even for a --config that is a bare core.
-  GLM_GDB_FACE="$face" rust-gdb -nx -x "$config" --batch -x "$script" \
+  GLM_GDB_FACE="$face" rust-gdb -q -nx -x "$config" --batch -x "$script" \
     --args ./target/debug/glm --debug "$@" > "$SCRATCH/$label.out" 2>&1
 }
 
@@ -207,7 +218,11 @@ EOF
     check agent-dense "si into the call pushes the return address" '\+0=0x[0-9a-f]+\(glm_exec\+[0-9]+\)'
     check_count agent-dense "stkwatch prints on every stop" 'stk\{' 3
   else
-    { echo "igrep 60 call"
+    { # Style gate forced on for the igrep color pin: batch gdb disables
+      # styling on non-ttys, and _glm_style_codes honors that gate — force
+      # it so the rebuild actually emits (interactive sessions have it on).
+      echo "set style enabled on"
+      echo "igrep 60 call"
       echo "pstack"
       echo "pstack 4 \$rbp"
       echo "stkwatch 1"
@@ -216,12 +231,22 @@ EOF
     run_human dense cases/21_interop_alloc_arg_header.lua 9
     check human-dense "breakpoint lands on Lua line"    '21_interop_alloc_arg_header\.lua:15'
     check human-dense "hook-stop dashboard survives"    'EFL: 0x'
+    check human-dense "opcode bytes ride their own [Bytes] row" '\[Bytes\] +[0-9A-F]{2}( [0-9A-F]{2})+'
     check human-dense "cregs one-line register dump"    'rip=0x'
     check human-dense "parg shows human header border"  '=== GlmTable at 0x'
     check human-dense "pcells decodes typed cell"       '\[INT\].*9'
     check human-dense "cbt elides into Rust host"       'glm::run_boundary'
     check human-dense "igrep surfaces the call ahead"   'call.*sys_alloc_count@plt'
     check human-dense "igrep human summary line"        'match\(es\) in the next 60 instructions'
+    # Raw (un-stripped) pin: batch gdb styles NOTHING natively, so an
+    # escape right after the => of an igrep line can only be _glm_style_
+    # disasm's rebuild of gdb's own disassembler styling.
+    if grep -qP '=> \x1b\[[0-9;]+m0x[0-9a-f]+' "$SCRATCH/human-dense.out" 2>/dev/null; then
+      printf '  ✓ %s %s\n' human-dense "igrep lines wear gdb-style colors"
+    else
+      printf '  ✗ %s %s — none found\n' human-dense "igrep lines wear gdb-style colors"
+      FAIL=1
+    fi
     check human-dense "pstack pretty window"            '=== Stack window: 8 word\(s\) up from rsp 0x'
     check human-dense "pstack decodes code pointers"    '← glm::run_boundary\+[0-9]+ \(code\)'
     check human-dense "pstack \$rbp flags the frame base" '← \$rbp'
@@ -259,8 +284,11 @@ EOF
     check human-sparse "xqv prints human border"         '=== 128-bit Cell \(By Value\) ==='
     check human-sparse "here anchors the source line"    '\.lua:12: '
     # Six stops happen in this cell (five set_any + the Lua line); the
-    # dashboard must have printed at every one of them.
+    # dashboard must have printed at every one of them — and so must the
+    # [Bytes] row, from the FIRST stop (the registration landmine: a
+    # hook-body-only python def would print nothing until the second).
     check_count human-sparse "dashboard survives all six stops" 'EFL: 0x' 6
+    check_count human-sparse "opcode row at all six stops" '\[Bytes\]' 6
   fi
 
   # ---- any (dynamic-cell adoption, mixed decode, border) ---------------
@@ -340,6 +368,13 @@ if [ "$FACE" != human ]; then
     printf '  ✓ agent-discipline no per-stop dashboard (%d files)\n' "$n_trans"
   else
     printf '  ✗ agent-discipline dashboard leaked into: %s\n' "$dash_bad"
+    FAIL=1
+  fi
+  opc_bad=$(grep -l '\[Bytes\]' "$SCRATCH"/agent-*.out 2>/dev/null || true)
+  if [ -z "$opc_bad" ]; then
+    printf '  ✓ agent-discipline no [Bytes] opcode row (%d files)\n' "$n_trans"
+  else
+    printf '  ✗ agent-discipline [Bytes] row leaked into: %s\n' "$opc_bad"
     FAIL=1
   fi
 fi

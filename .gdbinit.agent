@@ -2,10 +2,11 @@
 #
 # Load INSTEAD of the human config (never both):
 #   cd ~/lua
-#   rust-gdb -nx -x .gdbinit.agent --args ./target/debug/glm --debug cases/<case>.lua <args...>
-# -nx suppresses ~/.gdbinit AND ./.gdbinit (the human shim); rust-gdb's own
-# injected pretty-printer -x still loads. CWD must be ~/lua — the host resolves
-# ./libglm_out.so, out.ll, and the trace plates relative to it.
+#   rust-gdb -q -nx -x .gdbinit.agent --args ./target/debug/glm --debug cases/<case>.lua <args...>
+# -nx suppresses ~/.gdbinit AND ./.gdbinit (the human shim); -q silences the
+# greeting; rust-gdb's own injected pretty-printer -x still loads. CWD must be
+# ~/lua — the host resolves ./libglm_out.so, out.ll, and the trace plates
+# relative to it.
 #
 # Design contract (the agent face of the one core — see gdb/glm.gdbinit):
 #   * Stops are fully silent — gdb already echoes `file:line` + the source text

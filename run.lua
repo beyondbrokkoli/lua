@@ -29,7 +29,7 @@ if mode ~= "run" and mode ~= "probe" then
 end
 
 -- The rustfmt flag, parsed anywhere after the mode.
-local FMT = false
+local FMT = true
 for i = 2, #ARGS do
     if ARGS[i] == "--fmt" then FMT = true end
 end

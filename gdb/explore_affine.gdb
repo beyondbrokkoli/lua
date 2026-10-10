@@ -6,16 +6,16 @@
 # the breakpoints its case can reach, so nothing needs editing between runs:
 #
 #   # 1. Affine move & poisoning   (local u = t)
-#   rust-gdb -nx -x .gdbinit.agent --batch -x gdb/explore_affine.gdb --args \
+#   rust-gdb -q -nx -x .gdbinit.agent --batch -x gdb/explore_affine.gdb --args \
 #       ./target/debug/glm cases/explore_move_poison.lua
 #
 #   # 2. If-join phis & the faithful handle   (pick = a / pick = b)
-#   rust-gdb -nx -x .gdbinit.agent --batch -x gdb/explore_affine.gdb --args \
+#   rust-gdb -q -nx -x .gdbinit.agent --batch -x gdb/explore_affine.gdb --args \
 #       ./target/debug/glm cases/explore_join_phi.lua
 #
 #   # 3. Deep-free transfer   (m[0] = {7, 8})  --debug so the Lua-line stop
 #   #    keeps its module DWARF for parg
-#   rust-gdb -nx -x .gdbinit.agent --batch -x gdb/explore_affine.gdb --args \
+#   rust-gdb -q -nx -x .gdbinit.agent --batch -x gdb/explore_affine.gdb --args \
 #       ./target/debug/glm --debug cases/explore_deep_free.lua
 #
 # RECON PASS (the tag team — signals as the breakpoint map):

@@ -1,7 +1,7 @@
 # /home/halim/lua/.gdbinit — thin shim: the HUMAN face of gdb/glm.gdbinit.
 #
 # Auto-loaded whenever gdb starts in the repo root (plain `rust-gdb` from
-# ~/lua), or explicitly: rust-gdb -nx -x .gdbinit --args ...
+# ~/lua), or explicitly: rust-gdb -q -nx -x .gdbinit --args ...
 #
 # The human face of the one core (see gdb/glm.gdbinit): the same toolset as the
 # agent face PLUS the per-stop register dashboard, ANSI colors everywhere,

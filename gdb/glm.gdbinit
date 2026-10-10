@@ -6,7 +6,7 @@
 #
 # Face selection happens at load time, first match wins:
 #   1. GLM_GDB_FACE=agent|human in the environment — lets a draft core be
-#      driven directly: GLM_GDB_FACE=human rust-gdb -nx -x gdb/glm.gdbinit ...
+#      driven directly: GLM_GDB_FACE=human rust-gdb -q -nx -x gdb/glm.gdbinit ...
 #   2. the $glm_face_human convenience variable, set by a shim;
 #   3. default: agent — silence is the safer fallback for an unspecified face.
 # The core re-publishes the verdict as $glm_face_human (ALWAYS initialized
@@ -14,7 +14,13 @@
 # without the void-convenience-variable landmine.
 #
 # Documented variant points (everything else is shared byte-for-byte):
-#   * hook-stop dashboard — human only (gated body; agent stops stay silent)
+#   * hook-stop dashboard — human only (gated body; agent stops stay
+#     silent). Its tail keeps the native x/1i line verbatim (gdb's own
+#     disassembler styling — colored %rip-style registers, mnemonics —
+#     and tab placement), preceded by _glm_opcodes_line: the instruction's
+#     raw opcode bytes on their own [Bytes] row — x/1i cannot show bytes,
+#     so that row is the Python API (architecture().disassemble +
+#     inferior read_memory).
 #   * _cell / parg / pcells / xq / xqv formatting — agent: compact one-line
 #     output, human: labels, annotation, and color. parg prints `border`
 #     in BOTH faces (one source, no raw +48 reads needed to see it).
@@ -23,7 +29,9 @@
 #     human: renumbered over the PRINTED frames (walks 64 deep so elided
 #     std frames don't consume the budget)
 #   * igrep — agent: plain lines + `igrep: N match(es) in M instructions`;
-#     human: green-highlighted matches + cyan summary line
+#     human: lines wear gdb's own disassembler styling (rebuilt from
+#     `show style` — to_string capture strips gdb's escapes), matches pop
+#     bold-green on top + cyan summary line
 #   * here — human colors the basename:line anchor
 #   * `set print pretty/array/...` and history settings — belong to the
 #     shims, never the core
@@ -134,11 +142,48 @@ class _Cregs(gdb.Command):
 _Cregs()
 end
 
+# --- _glm_opcodes_line (internal): the dashboard's [Bytes] row ------------
+# The dashboard's instruction line is native x/1i, verbatim — gdb's own
+# disassembler styling (colored %rip-style registers, mnemonics) and tab
+# placement are the reference the human face wants, and the Python API's
+# asm strings carry none of it. But x/1i cannot show the raw opcode bytes,
+# so this companion row adds them on their own line:
+# architecture().disassemble(pc, pc+1)[0] yields the exact instruction at
+# pc (its `length` field sizes the byte read — never a fixed guess) and
+# inferior read_memory pulls the opcodes out. Pure API end to end: it
+# parses no C, hence no language sandwich even at Rust-DWARF frames, and
+# it creates no convenience names (segment-register collisions stay
+# impossible). Defined at TOP LEVEL so the hook's FIRST stop already finds
+# the symbol (the registration landmine); every failure path prints
+# nothing — the native x/1i line below is the anchor and must never be
+# upstaged by an error (a raising hook-stop prints a traceback at every
+# stop).
+python
+def _glm_opcodes_line():
+    try:
+        pc = int(gdb.selected_frame().pc()) & 0xFFFFFFFFFFFFFFFF
+        length = int(gdb.selected_frame().architecture()
+                     .disassemble(pc, pc + 1)[0].get("length") or 0)
+        if not length:
+            return
+        code = bytes(gdb.selected_inferior().read_memory(pc, length))
+    except Exception:
+        return
+    # [Bytes] padded to the dashboard's label column ([Ret/Stack],
+    # [Scratch], [Saved] ...); dim cyan keeps the row present without
+    # competing with the styled instruction line above it.
+    print("\033[35m[Bytes]    \033[0m  \033[2;36m%s\033[0m"
+          % " ".join("%02X" % b for b in code))
+
+
+end
+
 # --- hook-stop: the human face's per-stop register dashboard --------------
 # Gated on the face: the agent face keeps fully silent stops (gdb's own
 # file:line + source echo is the only per-stop context it wants). No
-# language sandwich in the body: plain register printf and x/1i are
-# language-independent (proven at both Rust-DWARF and Lua frames), and a
+# language sandwich in the body: the register printf, the native x/1i,
+# and the python [Bytes] row are language-independent (printf plus
+# pure-API reads — proven at both Rust-DWARF and Lua frames), and a
 # `set language c` here would print the "current language does not match
 # this frame" warning at every Rust-frame stop. $eflags goes straight to
 # printf — the struct converts to its integral value; NEVER cast it (any
@@ -156,7 +201,11 @@ define hook-stop
     printf "\e[35m[Saved]    \e[0m  \e[1;36mRBX:\e[0m 0x%016lx  \e[1;36mR12:\e[0m 0x%016lx  \e[1;36mR13:\e[0m 0x%016lx\n", $rbx, $r12, $r13
     printf "\e[35m[Saved]    \e[0m  \e[1;36mR14:\e[0m 0x%016lx  \e[1;36mR15:\e[0m 0x%016lx  \e[1;33mEFL:\e[0m 0x%016lx\n", $r14, $r15, $eflags
 
-    # Exactly the next instruction, natively.
+    # The raw opcode bytes first, on the [Bytes] row (x/1i cannot show
+    # them; the row stays silent on any failure, never a traceback), then
+    # exactly the next instruction, natively — gdb's own styling and
+    # placement, verbatim, as the dashboard's last line.
+    python _glm_opcodes_line()
     x/1i $pc
     echo \n
   end
@@ -827,10 +876,145 @@ end
 # memory raises and loses the partial output, so the walk goes in
 # 64-instruction chunks with one lookahead instruction (which names the
 # true next start — x/Ni prints no end address). A failed chunk falls
-# back to the mapped prefix. The human face highlights each match in
-# green and prints a cyan summary line; the agent face stays plain.
+# back to the mapped prefix. The agent face stays plain. The human face
+# re-applies gdb's OWN disassembler styling to each printed line: gdb's
+# escapes never survive a to_string capture (the capture stream is not a
+# tty), so the interactive x/1i coloring — address/branch-target blue,
+# symbol names yellow (+off plain), mnemonic green, %registers red,
+# $immediates and displacements blue, the whole `# comment` tail dim —
+# is rebuilt from `show style` (honoring the user's own restyling),
+# with the regex matches popping bold-green on top of it and a cyan
+# summary line. Ground truth for every one of those spans was captured
+# from a styled pty session; if the classification here ever disagrees
+# with a live `x/1i`, trust the capture and fix the token table.
 python
 import re as _re
+
+
+def _glm_style_codes():
+    """Parse `show style` once → {style name: escape}; {} when styling is
+    globally disabled or unparsable (callers print plain lines then)."""
+    try:
+        raw = gdb.execute("show style", to_string=True)
+    except Exception:
+        return {}
+    for ln in raw.splitlines():
+        if ln.startswith("style enabled:") and "disabled" in ln:
+            return {}
+    fg = {"black": "30", "red": "31", "green": "32", "yellow": "33",
+          "blue": "34", "magenta": "35", "cyan": "36", "white": "37"}
+    bg = {"black": "40", "red": "41", "green": "42", "yellow": "43",
+          "blue": "44", "magenta": "45", "cyan": "46", "white": "47"}
+    for i, c in enumerate("black red green yellow blue magenta cyan white".split()):
+        fg["light-" + c] = str(90 + i)
+        bg["light-" + c] = str(100 + i)
+    fields = {}
+    for ln in raw.splitlines():
+        m = _re.match(r'style (.+) (background|foreground|intensity): '
+                      r'.* is: (.+?)\s*$', ln)
+        if not m:
+            continue
+        name, field, val = m.groups()
+        d = fields.setdefault(name, {})
+        if field == "foreground":
+            d["fg"] = fg.get(val, "38;5;" + val if val.isdigit() else "")
+        elif field == "background":
+            d["bg"] = bg.get(val, "48;5;" + val if val.isdigit() else "")
+        else:
+            d["int"] = {"bold": "1", "dim": "2"}.get(val, "")
+    out = {}
+    for name, d in fields.items():
+        params = [p for p in (d.get("int", ""), d.get("fg", ""), d.get("bg", "")) if p]
+        if params:
+            out[name] = "\033[" + ";".join(params) + "m"
+    return out
+
+
+# Operand token table, classification-first (comment before target before
+# the rest, so `# ... <sym>` stays comment-dim and `0x.. <sym>` splits).
+_GLM_TOK = _re.compile(
+    r'(?P<comment>\s+#.*$)'
+    r'|(?P<target>0x[0-9a-fA-F]+\s+<.*>)'
+    r'|(?P<reg>%[a-z0-9]+)'
+    r'|(?P<imm>\$-?(?:0x[0-9a-fA-F]+|[0-9]+))'
+    r'|(?P<disp>-?0x[0-9a-fA-F]+)'
+    r'|(?P<num>[0-9]+)')
+
+
+def _glm_style_disasm(line, spans, S):
+    """One x/i line wearing gdb's own styles; `spans` are absolute plain-text
+    match ranges overlaid bold-green. Unparsable lines return plain."""
+    R = "\033[0m"
+    pieces = []   # (start, end, style-name-or-None) over the whole line
+    at = [0]
+
+    def put(text, key=None):
+        if text:
+            pieces.append((at[0], at[0] + len(text), key))
+            at[0] += len(text)
+
+    def put_sym(txt):
+        # <name+off> — the NAME wears the function style, `+off` stays plain
+        sm = _re.match(r'(.*)\+(\d+)$', txt)
+        if sm:
+            put(sm.group(1), "function")
+            put("+" + sm.group(2))
+        else:
+            put(txt, "function")
+
+    head, tab, rest = line.partition(":\t")
+    hm = _re.match(r'^(=> ?|   )?(0x[0-9a-fA-F]+)(?: <(.*)>)?$', head) if tab else None
+    if hm is None:
+        return line
+    put(hm.group(1) or "")
+    put(hm.group(2), "address")
+    if hm.group(3) is not None:
+        put(" <")
+        put_sym(hm.group(3))
+        put(">")
+    put(":\t")
+    mn = _re.match(r'\S+', rest)
+    if mn:
+        put(mn.group(0), "disassembler mnemonic")
+    pos = mn.end() if mn else 0
+    while pos < len(rest):
+        t = _GLM_TOK.search(rest, pos)
+        if t is None:
+            put(rest[pos:])
+            break
+        put(rest[pos:t.start()])
+        kind = t.lastgroup
+        if kind == "comment":
+            put(t.group(0), "disassembler comment")
+        elif kind == "target":
+            tm = _re.match(r'(0x[0-9a-fA-F]+)(\s+)(<.*)$', t.group(0))
+            put(tm.group(1), "address")
+            put(tm.group(2))
+            put("<")
+            put_sym(tm.group(3)[1:-1])
+            put(">")
+        elif kind == "reg":
+            put(t.group(0), "disassembler register")
+        else:   # imm / disp / num
+            put(t.group(0), "disassembler immediate")
+        pos = t.end()
+    if at[0] != len(line):
+        return line   # the walk lost sync — plain beats half-styled text
+    out = []
+    for a, b, key in pieces:
+        cuts = [a, b]
+        for s, e in spans:
+            if a < s < b:
+                cuts.append(s)
+            if a < e < b:
+                cuts.append(e)
+        for x, y in zip(*[iter(sorted(set(cuts)))] * 2):
+            hit = any(s < y and e > x for s, e in spans)
+            esc = "\033[1;32m" if hit else (S.get(key) if key else "")
+            chunk = line[x:y]
+            out.append((esc + chunk + R) if esc else chunk)
+    return "".join(out)
+
 
 class IGrep(gdb.Command):
     """igrep <count> <pattern> [addr] — disassemble count instructions from
@@ -851,6 +1035,7 @@ class IGrep(gdb.Command):
         pat = _re.compile(argv[1], _re.IGNORECASE)
         start = argv[2] if len(argv) > 2 else "$pc"
         addr = _re.compile(r"^\s*(?:=>\s*)?(0x[0-9a-fA-F]+)")
+        styles = False   # parsed lazily on the first printed human line
         shown = seen = 0
         while seen < want:
             n = min(64, want - seen)
@@ -867,8 +1052,12 @@ class IGrep(gdb.Command):
             for line in lines:
                 if pat.search(line):
                     if GLM_HUMAN:
-                        print(pat.sub(
-                            lambda m: "\033[1;32m%s\033[0m" % m.group(0), line))
+                        if styles is False:
+                            styles = _glm_style_codes()
+                        print(_glm_style_disasm(
+                            line,
+                            [(m.start(), m.end()) for m in pat.finditer(line)],
+                            styles))
                     else:
                         print(line)
                     shown += 1
